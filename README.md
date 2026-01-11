@@ -8,9 +8,9 @@ In addition to the original built-in sensors (SCD4x CO2, SGP40 TVOC), this firmw
 
 | Sensor | Type | Measurements |
 |--------|------|--------------|
-| **Grove HM3301 (HM330X)** | Particulate Matter | PM1.0, PM2.5, PM10 (ug/m3) |
+| **Grove HM3301 (HM330X)** | Particulate Matter | PM1.0, PM2.5, PM10 (ug/m³) |
 | **Grove Multichannel Gas Sensor V2** | Multi-Gas | NO2, C2H5OH (Ethanol), VOC, CO |
-| **Grove AHT20** | External Temp/Humidity | Temperature (C), Humidity (%) |
+| **Grove AHT20** | External Temp/Humidity | Temperature (°C), Humidity (%) |
 
 ### Sensor Summary
 
@@ -18,7 +18,7 @@ In addition to the original built-in sensors (SCD4x CO2, SGP40 TVOC), this firmw
   - SCD4x: CO2 (ppm), Temperature, Humidity
   - SGP40: TVOC Index
 
-- **External Sensors** (Grove I2C, optional):
+- **External Sensors** (Grove I2C, active if connected):
   - HM3301: PM1.0, PM2.5, PM10 particulate matter
   - Multichannel Gas V2: NO2, Ethanol, VOC, CO (raw voltage)
   - AHT20: External temperature and humidity
@@ -26,12 +26,12 @@ In addition to the original built-in sensors (SCD4x CO2, SGP40 TVOC), this firmw
 ## Features
 
 - [x] Time display with automatic timezone detection
-- [x] Real-time sensor data display (4-page UI)
+- [x] Real-time sensor data display (all sensors on one screen)
 - [x] Historical data display (24h day view, 7-day week view)
 - [x] WiFi configuration
 - [x] Display configuration
 - [x] Time configuration
-- [x] **MariaDB/MySQL database export** (NEW)
+- [x] **MariaDB/MySQL database export**
 
 ## MariaDB Database Export
 
@@ -93,32 +93,19 @@ Connect Grove sensors to the I2C Grove connectors on the SenseCAP Indicator. The
 ### Prerequisites
 
 - ESP-IDF v5.1 or later
-- PSRAM Octal 120M patch applied (see [patch instructions](../../tools/patch/README.md#idf-patch))
+- PSRAM Octal 120M patch applied (see [Seeed Wiki](https://wiki.seeedstudio.com/SenseCAP_Indicator_ESP32_Flash/))
 
-### ESP32-S3 (Main Firmware)
+### Build & Flash
 
 ```bash
-cd examples/indicator_basis
 idf.py build
 idf.py -p /dev/ttyACM0 flash monitor
 ```
 
 ### RP2040 (Sensor Coprocessor)
 
-The RP2040 firmware is located in the companion repository:
+The RP2040 firmware is required for sensor communication:
 - Repository: [SenseCAP_Indicator_RP2040](https://github.com/t0mii/SenseCAP_Indicator_RP2040)
-- Path: `examples/indicator_rp2040/indicator_rp2040.ino`
-
-Flash using Arduino IDE or arduino-cli with the Raspberry Pi Pico board support.
-
-## UI Screenshots
-
-The sensor display is organized into 4 pages:
-
-1. **Environment**: External Temperature, Humidity, CO2, TVOC
-2. **Particulate Matter**: PM1.0, PM2.5, PM10
-3. **Gas Sensors**: NO2, C2H5OH, VOC, CO
-4. **Internal Sensors**: Internal Temperature, Humidity
 
 ## License
 
