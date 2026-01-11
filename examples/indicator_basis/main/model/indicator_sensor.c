@@ -3,11 +3,19 @@
 #include "cobs.h"
 #include "esp_timer.h"
 #include "nvs.h"
-#include<stdlib.h>
+#include <stdlib.h>
+#include <math.h>
 #include "time.h"
 
 #define SENSOR_HISTORY_DATA_DEBUG  0
-#define SENSOR_COMM_DEBUG    0
+#define SENSOR_COMM_DEBUG    1
+
+/* History storage interval: 10 minutes (600 seconds)
+ * With 24 data points, this covers 4 hours of recent data */
+#define HISTORY_INTERVAL_SECONDS  600
+
+/* Validate float value - reject NaN and Inf */
+#define FLOAT_IS_VALID(f) (isfinite(f))
 
 
 #define ESP32_RP2040_TXD (19)
@@ -39,6 +47,15 @@ enum  pkt_type {
     PKT_TYPE_SENSOR_SHT41_HUMIDITY = 0xB4, // float
 
     PKT_TYPE_SENSOR_TVOC_INDEX = 0xB5, // float
+    PKT_TYPE_SENSOR_PM1_0 = 0xB6,
+    PKT_TYPE_SENSOR_PM2_5 = 0xB7,
+    PKT_TYPE_SENSOR_PM10 = 0xB8,
+    PKT_TYPE_SENSOR_GM102B_NO2 = 0xB9,
+    PKT_TYPE_SENSOR_GM302B_C2H5OH = 0xBA,
+    PKT_TYPE_SENSOR_GM502B_VOC = 0xBB,
+    PKT_TYPE_SENSOR_GM702B_CO = 0xBC,
+    PKT_TYPE_SENSOR_TEMP_EXTERNAL = 0xBD,
+    PKT_TYPE_SENSOR_HUMIDITY_EXTERNAL = 0xBE,
 
     //todo
 };
@@ -68,6 +85,16 @@ struct indicator_sensor_present_data
     struct sensor_present_data humidity;
     struct sensor_present_data co2;
     struct sensor_present_data tvoc;
+    /* Extended sensors */
+    struct sensor_present_data temp_ext;
+    struct sensor_present_data humidity_ext;
+    struct sensor_present_data pm1_0;
+    struct sensor_present_data pm2_5;
+    struct sensor_present_data pm10;
+    struct sensor_present_data no2;
+    struct sensor_present_data c2h5oh;
+    struct sensor_present_data voc;
+    struct sensor_present_data co;
 };
 
 
@@ -77,6 +104,16 @@ struct indicator_sensor_history_data
     struct sensor_history_data humidity;
     struct sensor_history_data co2;
     struct sensor_history_data tvoc;
+    /* Extended sensors */
+    struct sensor_history_data temp_ext;
+    struct sensor_history_data humidity_ext;
+    struct sensor_history_data pm1_0;
+    struct sensor_history_data pm2_5;
+    struct sensor_history_data pm10;
+    struct sensor_history_data no2;
+    struct sensor_history_data c2h5oh;
+    struct sensor_history_data voc;
+    struct sensor_history_data co;
 };
 
 struct updata_queue_msg
@@ -97,6 +134,22 @@ static struct indicator_sensor_present_data  __g_sensor_present_data;
 static esp_timer_handle_t   sensor_history_data_timer_handle;
 
 static QueueHandle_t updata_queue_handle = NULL;
+
+static struct view_data_sensor __g_current_sensor_data = {0};
+
+/*
+ * Grove Multichannel Gas Sensor V2 - ppm(eq) ranges
+ * These are QUALITATIVE/UNCALIBRATED equivalent ppm estimates.
+ * See: https://wiki.seeedstudio.com/Grove-Multichannel-Gas-Sensor-V2/
+ */
+#define GM102B_PPM_MIN  0.05f   /* NO2: 0.05-10 ppm range */
+#define GM102B_PPM_MAX  10.0f
+#define GM302B_PPM_MIN  10.0f   /* C2H5OH (Ethanol): 10-500 ppm range */
+#define GM302B_PPM_MAX  500.0f
+#define GM502B_PPM_MIN  1.0f    /* VOC: 1-500 ppm range */
+#define GM502B_PPM_MAX  500.0f
+#define GM702B_PPM_MIN  1.0f    /* CO: 1-1000 ppm range */
+#define GM702B_PPM_MAX  1000.0f
 
 static void __sensor_history_data_get( struct sensor_history_data  *p_history, struct view_data_sensor_history_data *p_data)
 {
@@ -169,12 +222,12 @@ static void __sensor_history_data_save(void)
 
 static void __sensor_history_data_day_check(struct sensor_data_average p_data_day[], const char *p_sensor_name, time_t now)
 {
-    //check history data day
-    int history_hour =0;
-    int cur_hour = 0;
+    //check history data day - using 10-minute intervals
+    int history_interval = 0;
+    int cur_interval = 0;
 
-    history_hour =p_data_day[23].timestamp/3600;
-    cur_hour = now/3600;
+    history_interval = p_data_day[23].timestamp / HISTORY_INTERVAL_SECONDS;
+    cur_interval = now / HISTORY_INTERVAL_SECONDS;
 
     for( int i =0;  i < 24; i++) {
         if( p_data_day[i].valid) {
@@ -182,33 +235,35 @@ static void __sensor_history_data_day_check(struct sensor_data_average p_data_da
         }
     }
 
-    if( history_hour  >  cur_hour) {
+    if( history_interval  >  cur_interval) {
         ESP_LOGI(TAG, "%s History day data pull ahead, clear data", p_sensor_name);
         memset(p_data_day, 0, sizeof(struct sensor_data_average)*24);
         return;
     }
 
+    /* Validate consecutive intervals - allow some tolerance for 10-min intervals */
     for(int i =0; i < 23; i++ ) {
-       int hour1 =p_data_day[i].timestamp/3600;
-       int hour2 =p_data_day[i+1].timestamp/3600;
-       if( (hour2-hour1) != 1) {
-            ESP_LOGI(TAG, "%s History day data error, clear data", p_sensor_name);
+       int interval1 = p_data_day[i].timestamp / HISTORY_INTERVAL_SECONDS;
+       int interval2 = p_data_day[i+1].timestamp / HISTORY_INTERVAL_SECONDS;
+       /* Allow gap of 1-3 intervals (10-30 minutes) to handle slight timing variations */
+       if( (interval2 - interval1) < 1 || (interval2 - interval1) > 3) {
+            ESP_LOGI(TAG, "%s History day data error (gap=%d), clear data", p_sensor_name, interval2-interval1);
             memset(p_data_day, 0, sizeof(struct sensor_data_average)*24);
             return;
        }
     }
 
-    if( history_hour == cur_hour) {
+    if( history_interval == cur_interval) {
         ESP_LOGI(TAG, "%s History day data valid", p_sensor_name);
         return;
     }
 
-    if( history_hour < ( cur_hour -23) ) {
+    if( history_interval < ( cur_interval - 23) ) {
         ESP_LOGI(TAG, "%s History day data expired, clear data!", p_sensor_name);
         memset(p_data_day, 0, sizeof(struct sensor_data_average)*24);
     } else {
 
-        int overlap_cnt = history_hour - ( cur_hour -23)+1;
+        int overlap_cnt = history_interval - ( cur_interval - 23) + 1;
 
         ESP_LOGI(TAG, "%s History day data  %d overlap !", p_sensor_name, overlap_cnt);
 
@@ -220,7 +275,7 @@ static void __sensor_history_data_day_check(struct sensor_data_average p_data_da
             } else {
                 p_data_day[i].data = 0;
                 p_data_day[i].valid = false;
-                p_data_day[i].timestamp = now - (23 -i) * 3600;;
+                p_data_day[i].timestamp = now - (23 -i) * HISTORY_INTERVAL_SECONDS;
             }
         }
     }
@@ -293,17 +348,18 @@ static void __sensor_history_data_week_check(struct sensor_data_minmax p_data_we
 
 static void __sensor_history_data_day_insert(struct sensor_data_average p_data_day[],  struct sensor_present_data  *p_cur,  time_t now)
 {
-    int history_hour =0;
-    int cur_hour = 0;
+    int history_interval = 0;
+    int cur_interval = 0;
     struct tm timeinfo;
 
+    /* Calculate current 10-minute interval */
     localtime_r( &now, &timeinfo);
-    cur_hour = timeinfo.tm_hour;
-    
-    localtime_r( &(p_data_day[23].timestamp), &timeinfo);
-    history_hour = timeinfo.tm_hour;
+    cur_interval = (timeinfo.tm_hour * 60 + timeinfo.tm_min) / 10;
 
-    if( cur_hour == history_hour) {
+    localtime_r( &(p_data_day[23].timestamp), &timeinfo);
+    history_interval = (timeinfo.tm_hour * 60 + timeinfo.tm_min) / 10;
+
+    if( cur_interval == history_interval) {
         return;
     }
 
@@ -311,16 +367,16 @@ static void __sensor_history_data_day_insert(struct sensor_data_average p_data_d
         p_data_day[i].data = p_data_day[i+1].data;
         p_data_day[i].valid = p_data_day[i+1].valid;
         p_data_day[i].timestamp = p_data_day[i+1].timestamp;
-        
+
         if( !p_data_day[i].valid) {
-            p_data_day[i].timestamp = now - (23 -i) * 3600;
+            p_data_day[i].timestamp = now - (23 -i) * HISTORY_INTERVAL_SECONDS;
         }
     }
     if( p_cur->per_hour_cnt >=1) {
         p_data_day[23].valid = true;
         p_data_day[23].data = p_cur->average;
 
-        //clear present data 
+        //clear present data
         p_cur->per_hour_cnt = 0;
         p_cur->sum = 0.0;
 
@@ -399,18 +455,45 @@ static void __sensor_history_data_check(time_t now)
     check_flag =  true;
 
     xSemaphoreTake(__g_data_mutex, portMAX_DELAY);
-    __sensor_history_data_day_check(__g_sensor_history_data.temp.data_day,   "Temp", now - 3600);
+    __sensor_history_data_day_check(__g_sensor_history_data.temp.data_day,   "Temp", now - HISTORY_INTERVAL_SECONDS);
     __sensor_history_data_week_check(__g_sensor_history_data.temp.data_week, "Temp",  now - 3600 * 24);
 
-    __sensor_history_data_day_check(__g_sensor_history_data.humidity.data_day,   "Humidity", now - 3600);
+    __sensor_history_data_day_check(__g_sensor_history_data.humidity.data_day,   "Humidity", now - HISTORY_INTERVAL_SECONDS);
     __sensor_history_data_week_check(__g_sensor_history_data.humidity.data_week, "Humidity",  now - 3600 * 24);
 
-    __sensor_history_data_day_check(__g_sensor_history_data.co2.data_day,   "CO2", now - 3600);
+    __sensor_history_data_day_check(__g_sensor_history_data.co2.data_day,   "CO2", now - HISTORY_INTERVAL_SECONDS);
     __sensor_history_data_week_check(__g_sensor_history_data.co2.data_week, "CO2",  now - 3600 * 24);
 
-
-    __sensor_history_data_day_check(__g_sensor_history_data.tvoc.data_day,   "TVOC", now - 3600);
+    __sensor_history_data_day_check(__g_sensor_history_data.tvoc.data_day,   "TVOC", now - HISTORY_INTERVAL_SECONDS);
     __sensor_history_data_week_check(__g_sensor_history_data.tvoc.data_week, "TVOC",  now - 3600 * 24);
+
+    /* Extended sensors */
+    __sensor_history_data_day_check(__g_sensor_history_data.temp_ext.data_day,   "TempExt", now - HISTORY_INTERVAL_SECONDS);
+    __sensor_history_data_week_check(__g_sensor_history_data.temp_ext.data_week, "TempExt",  now - 3600 * 24);
+
+    __sensor_history_data_day_check(__g_sensor_history_data.humidity_ext.data_day,   "HumExt", now - HISTORY_INTERVAL_SECONDS);
+    __sensor_history_data_week_check(__g_sensor_history_data.humidity_ext.data_week, "HumExt",  now - 3600 * 24);
+
+    __sensor_history_data_day_check(__g_sensor_history_data.pm1_0.data_day,   "PM1.0", now - HISTORY_INTERVAL_SECONDS);
+    __sensor_history_data_week_check(__g_sensor_history_data.pm1_0.data_week, "PM1.0",  now - 3600 * 24);
+
+    __sensor_history_data_day_check(__g_sensor_history_data.pm2_5.data_day,   "PM2.5", now - HISTORY_INTERVAL_SECONDS);
+    __sensor_history_data_week_check(__g_sensor_history_data.pm2_5.data_week, "PM2.5",  now - 3600 * 24);
+
+    __sensor_history_data_day_check(__g_sensor_history_data.pm10.data_day,   "PM10", now - HISTORY_INTERVAL_SECONDS);
+    __sensor_history_data_week_check(__g_sensor_history_data.pm10.data_week, "PM10",  now - 3600 * 24);
+
+    __sensor_history_data_day_check(__g_sensor_history_data.no2.data_day,   "NO2", now - HISTORY_INTERVAL_SECONDS);
+    __sensor_history_data_week_check(__g_sensor_history_data.no2.data_week, "NO2",  now - 3600 * 24);
+
+    __sensor_history_data_day_check(__g_sensor_history_data.c2h5oh.data_day,   "C2H5OH", now - HISTORY_INTERVAL_SECONDS);
+    __sensor_history_data_week_check(__g_sensor_history_data.c2h5oh.data_week, "C2H5OH",  now - 3600 * 24);
+
+    __sensor_history_data_day_check(__g_sensor_history_data.voc.data_day,   "VOC", now - HISTORY_INTERVAL_SECONDS);
+    __sensor_history_data_week_check(__g_sensor_history_data.voc.data_week, "VOC",  now - 3600 * 24);
+
+    __sensor_history_data_day_check(__g_sensor_history_data.co.data_day,   "CO", now - HISTORY_INTERVAL_SECONDS);
+    __sensor_history_data_week_check(__g_sensor_history_data.co.data_week, "CO",  now - 3600 * 24);
 
     xSemaphoreGive(__g_data_mutex);
 }
@@ -418,14 +501,21 @@ static void __sensor_history_data_check(time_t now)
 static void __sensor_history_data_day_update(time_t now)
 {
     xSemaphoreTake(__g_data_mutex, portMAX_DELAY);
-    
+
     __sensor_history_data_day_insert( __g_sensor_history_data.temp.data_day, &__g_sensor_present_data.temp, now);
-
     __sensor_history_data_day_insert( __g_sensor_history_data.humidity.data_day, &__g_sensor_present_data.humidity, now);
-
     __sensor_history_data_day_insert( __g_sensor_history_data.co2.data_day, &__g_sensor_present_data.co2, now);
-
     __sensor_history_data_day_insert( __g_sensor_history_data.tvoc.data_day, &__g_sensor_present_data.tvoc, now);
+    /* Extended sensors */
+    __sensor_history_data_day_insert( __g_sensor_history_data.temp_ext.data_day, &__g_sensor_present_data.temp_ext, now);
+    __sensor_history_data_day_insert( __g_sensor_history_data.humidity_ext.data_day, &__g_sensor_present_data.humidity_ext, now);
+    __sensor_history_data_day_insert( __g_sensor_history_data.pm1_0.data_day, &__g_sensor_present_data.pm1_0, now);
+    __sensor_history_data_day_insert( __g_sensor_history_data.pm2_5.data_day, &__g_sensor_present_data.pm2_5, now);
+    __sensor_history_data_day_insert( __g_sensor_history_data.pm10.data_day, &__g_sensor_present_data.pm10, now);
+    __sensor_history_data_day_insert( __g_sensor_history_data.no2.data_day, &__g_sensor_present_data.no2, now);
+    __sensor_history_data_day_insert( __g_sensor_history_data.c2h5oh.data_day, &__g_sensor_present_data.c2h5oh, now);
+    __sensor_history_data_day_insert( __g_sensor_history_data.voc.data_day, &__g_sensor_present_data.voc, now);
+    __sensor_history_data_day_insert( __g_sensor_history_data.co.data_day, &__g_sensor_present_data.co, now);
 
     xSemaphoreGive(__g_data_mutex);
 
@@ -437,23 +527,29 @@ static void __sensor_history_data_week_update(time_t now)
     xSemaphoreTake(__g_data_mutex, portMAX_DELAY);
 
     __sensor_history_data_week_insert(__g_sensor_history_data.temp.data_week, &__g_sensor_present_data.temp, now);
-
     __sensor_history_data_week_insert(__g_sensor_history_data.humidity.data_week, &__g_sensor_present_data.humidity, now);
-
     __sensor_history_data_week_insert(__g_sensor_history_data.co2.data_week, &__g_sensor_present_data.co2, now);
-    
     __sensor_history_data_week_insert(__g_sensor_history_data.tvoc.data_week, &__g_sensor_present_data.tvoc, now);
+    /* Extended sensors */
+    __sensor_history_data_week_insert(__g_sensor_history_data.temp_ext.data_week, &__g_sensor_present_data.temp_ext, now);
+    __sensor_history_data_week_insert(__g_sensor_history_data.humidity_ext.data_week, &__g_sensor_present_data.humidity_ext, now);
+    __sensor_history_data_week_insert(__g_sensor_history_data.pm1_0.data_week, &__g_sensor_present_data.pm1_0, now);
+    __sensor_history_data_week_insert(__g_sensor_history_data.pm2_5.data_week, &__g_sensor_present_data.pm2_5, now);
+    __sensor_history_data_week_insert(__g_sensor_history_data.pm10.data_week, &__g_sensor_present_data.pm10, now);
+    __sensor_history_data_week_insert(__g_sensor_history_data.no2.data_week, &__g_sensor_present_data.no2, now);
+    __sensor_history_data_week_insert(__g_sensor_history_data.c2h5oh.data_week, &__g_sensor_present_data.c2h5oh, now);
+    __sensor_history_data_week_insert(__g_sensor_history_data.voc.data_week, &__g_sensor_present_data.voc, now);
+    __sensor_history_data_week_insert(__g_sensor_history_data.co.data_week, &__g_sensor_present_data.co, now);
 
     xSemaphoreGive(__g_data_mutex);
 
     __sensor_history_data_save();
-
 }
 
 
 static void __sensor_history_data_update_callback(void* arg)
 {
-    static int last_hour = 25;
+    static int last_interval = -1;
     static int last_day  = 32;
     static time_t  last_timestamp1 = 0;
     static time_t  last_timestamp2 = 0;
@@ -461,48 +557,43 @@ static void __sensor_history_data_update_callback(void* arg)
 
     now = time(NULL);
 
-    //  todo test
-    // static int time_cnt = 1;
-    // now += time_cnt * 3600;
-    // time_cnt++;
-
     struct tm timeinfo = { 0 };
     localtime_r( &now, &timeinfo);
 
     char strftime_buf[64];
     strftime(strftime_buf, sizeof(strftime_buf), "%c", &timeinfo);
 
-    int cur_hour = timeinfo.tm_hour;
+    /* Calculate current 10-minute interval (0-143 per day) */
+    int cur_interval = (timeinfo.tm_hour * 60 + timeinfo.tm_min) / 10;
     int cur_day  = timeinfo.tm_mday;
 
-    ESP_LOGI(TAG, "__sensor_history_data_update_callback: %s", strftime_buf);
+    ESP_LOGI(TAG, "__sensor_history_data_update_callback: %s (interval=%d)", strftime_buf, cur_interval);
 
-    //if greater than 2020 year mean time is right 
-    if( timeinfo.tm_year  < 120) { 
+    //if greater than 2020 year mean time is right
+    if( timeinfo.tm_year  < 120) {
         ESP_LOGI(TAG, "The time is not right!!!");
         return;
     }
 
     __sensor_history_data_check( now);
 
-    // Hour change and the duration is greater than 1 hour (to prevent hour change during time zone synchronization) 
-    // 小时变化并且 时长大于1h （防止在时区同步时, 小时变化的情况）
-    if( cur_hour != last_hour  &&  ((now - last_timestamp1) > 3600) ) {
-        last_hour = cur_hour;
-        
+    /* Store data every 10 minutes (HISTORY_INTERVAL_SECONDS) */
+    if( cur_interval != last_interval  &&  ((now - last_timestamp1) >= HISTORY_INTERVAL_SECONDS) ) {
+        last_interval = cur_interval;
+
         if( last_timestamp1 == 0) {
-            last_timestamp1 = ((now - 3600)/3600) * 3600;
+            last_timestamp1 = ((now - HISTORY_INTERVAL_SECONDS) / HISTORY_INTERVAL_SECONDS) * HISTORY_INTERVAL_SECONDS;
         }
-        
+
         struct updata_queue_msg msg = {
             .flag = 1,
             .time = last_timestamp1,
         };
 
         xQueueSendFromISR(updata_queue_handle, &msg, NULL);
-        //__sensor_history_data_day_update(last_timestamp1);
 
-        last_timestamp1 = ((now)/3600) * 3600; // Sample at the hour
+        last_timestamp1 = (now / HISTORY_INTERVAL_SECONDS) * HISTORY_INTERVAL_SECONDS;
+        ESP_LOGI(TAG, "Storing sensor data (10-min interval)");
     }
 
     if( cur_day != last_day  &&  ((now - last_timestamp2) > (3600*24))) {
@@ -518,8 +609,6 @@ static void __sensor_history_data_update_callback(void* arg)
 
         xQueueSendFromISR(updata_queue_handle, &msg, NULL);
 
-        //__sensor_history_data_week_update(last_timestamp2);
-        
         last_timestamp2 = ((now) / (3600 * 24)) * (3600 * 24); //Sample at the day
     }
 }
@@ -598,6 +687,66 @@ static void __sensor_present_data_update(struct sensor_present_data *p_data, flo
     xSemaphoreGive(__g_data_mutex);
 }
 
+/*
+ * Calculate ppm(eq) from raw sensor value for MultiGas sensors.
+ *
+ * The Grove Multichannel Gas Sensor V2 GM-x02B sensors output voltage
+ * proportional to gas concentration. This function converts to ppm(eq).
+ *
+ * @param raw_value   Raw float from sensor (voltage 0-3.3V or ADC 0-1023)
+ * @param ppm_min     Minimum detection range in ppm
+ * @param ppm_max     Maximum detection range in ppm
+ * @return ppm_eq     Equivalent ppm estimate (qualitative, not calibrated)
+ */
+/* Baseline voltage threshold - voltages below this are considered "clean air" (0 ppm)
+ * The Grove Multichannel Gas Sensor V2 outputs relatively high voltages at clean air.
+ * Typical clean air baseline is around 2.0-2.5V depending on sensor warm-up. */
+#define GAS_SENSOR_BASELINE_VOLTAGE  2.2f
+#define GAS_SENSOR_MAX_VOLTAGE       3.3f
+
+static float __calculate_multigas_ppm(float raw_value, float ppm_min, float ppm_max)
+{
+    float voltage;
+
+    /* Determine if input is voltage (0-3.3V) or ADC (>3.3 means ADC 0-1023) */
+    if (raw_value > 3.3f) {
+        /* ADC value - convert to voltage */
+        int adc = (int)(raw_value + 0.5f);
+        if (adc < 0) adc = 0;
+        if (adc > 1023) adc = 1023;
+        voltage = (adc * 3.3f) / 1023.0f;
+    } else {
+        /* Already voltage */
+        voltage = raw_value;
+        if (voltage < 0.0f) voltage = 0.0f;
+    }
+
+    /* Below baseline voltage = clean air, return 0 */
+    if (voltage <= GAS_SENSOR_BASELINE_VOLTAGE) {
+        return 0.0f;
+    }
+
+    /* Calculate ratio above baseline (0.0 to 1.0)
+     * baseline_voltage maps to 0, max_voltage maps to 1 */
+    float effective_range = GAS_SENSOR_MAX_VOLTAGE - GAS_SENSOR_BASELINE_VOLTAGE;
+    float ratio = (voltage - GAS_SENSOR_BASELINE_VOLTAGE) / effective_range;
+
+    if (ratio > 1.0f) ratio = 1.0f;
+
+    /* Use cubic function for very gradual increase at low concentrations
+     * ratio^3 gives much lower values at slightly elevated voltages */
+    ratio = ratio * ratio * ratio;
+
+    /* Linear interpolation with the cubed ratio */
+    float ppm_eq = ppm_min + ratio * (ppm_max - ppm_min);
+
+    /* Clamp to valid range */
+    if (ppm_eq < 0.0f) ppm_eq = 0.0f;
+    if (ppm_eq > ppm_max) ppm_eq = ppm_max;
+
+    return ppm_eq;
+}
+
 static int __data_parse_handle(uint8_t *p_data, ssize_t len)
 {
     uint8_t pkt_type = p_data[0];
@@ -608,14 +757,15 @@ static int __data_parse_handle(uint8_t *p_data, ssize_t len)
             if( len < (sizeof(data.vaule) +1)) {
                 break;
             }
-    
+
             data.sensor_type = SENSOR_DATA_CO2;
             memcpy(&data.vaule, &p_data[1], sizeof(data.vaule));
             __sensor_present_data_update(&__g_sensor_present_data.co2, data.vaule);
+            __g_current_sensor_data.co2 = data.vaule;
 
             esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA, \
                            &data, sizeof(struct view_data_sensor_data ), portMAX_DELAY);
-            break; 
+            break;
         } 
         
         case PKT_TYPE_SENSOR_SHT41_TEMP: {
@@ -623,10 +773,11 @@ static int __data_parse_handle(uint8_t *p_data, ssize_t len)
             if( len < (sizeof(data.vaule) +1)) {
                 break;
             }
-    
+
             data.sensor_type = SENSOR_DATA_TEMP;
             memcpy(&data.vaule, &p_data[1], sizeof(data.vaule));
             __sensor_present_data_update(&__g_sensor_present_data.temp, data.vaule);
+            __g_current_sensor_data.temp_internal = data.vaule;
 
             esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA, \
                            &data, sizeof(struct view_data_sensor_data ), portMAX_DELAY);
@@ -638,10 +789,11 @@ static int __data_parse_handle(uint8_t *p_data, ssize_t len)
             if( len < (sizeof(data.vaule) +1)) {
                 break;
             }
-        
+
             data.sensor_type = SENSOR_DATA_HUMIDITY;
             memcpy(&data.vaule, &p_data[1], sizeof(data.vaule));
             __sensor_present_data_update(&__g_sensor_present_data.humidity, data.vaule);
+            __g_current_sensor_data.humidity_internal = data.vaule;
 
             esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA, \
                            &data, sizeof(struct view_data_sensor_data ), portMAX_DELAY);
@@ -653,15 +805,168 @@ static int __data_parse_handle(uint8_t *p_data, ssize_t len)
             if( len < (sizeof(data.vaule) +1)) {
                 break;
             }
-    
+
             data.sensor_type = SENSOR_DATA_TVOC;
             memcpy(&data.vaule, &p_data[1], sizeof(data.vaule));
             __sensor_present_data_update(&__g_sensor_present_data.tvoc, data.vaule);
+            __g_current_sensor_data.tvoc = data.vaule;
 
             esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA, \
                            &data, sizeof(struct view_data_sensor_data ), portMAX_DELAY);
-            break; 
-        } 
+            break;
+        }
+
+        case PKT_TYPE_SENSOR_PM1_0: {
+            if (len < (sizeof(float) + 1)) break;
+            float value;
+            memcpy(&value, &p_data[1], sizeof(value));
+            if (!FLOAT_IS_VALID(value)) {
+                ESP_LOGW(TAG, "PM1.0: invalid float, dropping");
+                break;
+            }
+            ESP_LOGI(TAG, "PM1.0: %.1f ug/m3", value);
+            __sensor_present_data_update(&__g_sensor_present_data.pm1_0, value);
+            xSemaphoreTake(__g_data_mutex, portMAX_DELAY);
+            __g_current_sensor_data.pm1_0 = value;
+            xSemaphoreGive(__g_data_mutex);
+            break;
+        }
+
+        case PKT_TYPE_SENSOR_PM2_5: {
+            if (len < (sizeof(float) + 1)) break;
+            float value;
+            memcpy(&value, &p_data[1], sizeof(value));
+            if (!FLOAT_IS_VALID(value)) {
+                ESP_LOGW(TAG, "PM2.5: invalid float, dropping");
+                break;
+            }
+            ESP_LOGI(TAG, "PM2.5: %.1f ug/m3", value);
+            __sensor_present_data_update(&__g_sensor_present_data.pm2_5, value);
+            xSemaphoreTake(__g_data_mutex, portMAX_DELAY);
+            __g_current_sensor_data.pm2_5 = value;
+            xSemaphoreGive(__g_data_mutex);
+            break;
+        }
+
+        case PKT_TYPE_SENSOR_PM10: {
+            if (len < (sizeof(float) + 1)) break;
+            float value;
+            memcpy(&value, &p_data[1], sizeof(value));
+            if (!FLOAT_IS_VALID(value)) {
+                ESP_LOGW(TAG, "PM10: invalid float, dropping");
+                break;
+            }
+            ESP_LOGI(TAG, "PM10: %.1f ug/m3", value);
+            __sensor_present_data_update(&__g_sensor_present_data.pm10, value);
+            xSemaphoreTake(__g_data_mutex, portMAX_DELAY);
+            __g_current_sensor_data.pm10 = value;
+            xSemaphoreGive(__g_data_mutex);
+            break;
+        }
+
+        case PKT_TYPE_SENSOR_GM102B_NO2: {
+            if (len < (sizeof(float) + 1)) break;
+            float raw_value;
+            memcpy(&raw_value, &p_data[1], sizeof(raw_value));
+            if (!FLOAT_IS_VALID(raw_value)) {
+                ESP_LOGW(TAG, "NO2: invalid float, dropping");
+                break;
+            }
+            float ppm_eq = __calculate_multigas_ppm(raw_value, GM102B_PPM_MIN, GM102B_PPM_MAX);
+            __sensor_present_data_update(&__g_sensor_present_data.no2, ppm_eq);
+            xSemaphoreTake(__g_data_mutex, portMAX_DELAY);
+            __g_current_sensor_data.multigas_gm102b[0] = ppm_eq;
+            __g_current_sensor_data.multigas_gm102b[1] = raw_value;
+            ESP_LOGI(TAG, "NO2: ppm(eq)=%.2f (raw=%.2f)", ppm_eq, raw_value);
+            xSemaphoreGive(__g_data_mutex);
+            break;
+        }
+
+        case PKT_TYPE_SENSOR_GM302B_C2H5OH: {
+            if (len < (sizeof(float) + 1)) break;
+            float raw_value;
+            memcpy(&raw_value, &p_data[1], sizeof(raw_value));
+            if (!FLOAT_IS_VALID(raw_value)) {
+                ESP_LOGW(TAG, "C2H5OH: invalid float, dropping");
+                break;
+            }
+            float ppm_eq = __calculate_multigas_ppm(raw_value, GM302B_PPM_MIN, GM302B_PPM_MAX);
+            __sensor_present_data_update(&__g_sensor_present_data.c2h5oh, ppm_eq);
+            xSemaphoreTake(__g_data_mutex, portMAX_DELAY);
+            __g_current_sensor_data.multigas_gm302b[0] = ppm_eq;
+            __g_current_sensor_data.multigas_gm302b[1] = raw_value;
+            ESP_LOGI(TAG, "C2H5OH: ppm(eq)=%.1f (raw=%.2f)", ppm_eq, raw_value);
+            xSemaphoreGive(__g_data_mutex);
+            break;
+        }
+
+        case PKT_TYPE_SENSOR_GM502B_VOC: {
+            if (len < (sizeof(float) + 1)) break;
+            float raw_value;
+            memcpy(&raw_value, &p_data[1], sizeof(raw_value));
+            if (!FLOAT_IS_VALID(raw_value)) {
+                ESP_LOGW(TAG, "VOC: invalid float, dropping");
+                break;
+            }
+            float ppm_eq = __calculate_multigas_ppm(raw_value, GM502B_PPM_MIN, GM502B_PPM_MAX);
+            __sensor_present_data_update(&__g_sensor_present_data.voc, ppm_eq);
+            xSemaphoreTake(__g_data_mutex, portMAX_DELAY);
+            __g_current_sensor_data.multigas_gm502b[0] = ppm_eq;
+            __g_current_sensor_data.multigas_gm502b[1] = raw_value;
+            ESP_LOGI(TAG, "VOC: ppm(eq)=%.1f (raw=%.2f)", ppm_eq, raw_value);
+            xSemaphoreGive(__g_data_mutex);
+            break;
+        }
+
+        case PKT_TYPE_SENSOR_GM702B_CO: {
+            if (len < (sizeof(float) + 1)) break;
+            float raw_value;
+            memcpy(&raw_value, &p_data[1], sizeof(raw_value));
+            if (!FLOAT_IS_VALID(raw_value)) {
+                ESP_LOGW(TAG, "CO: invalid float, dropping");
+                break;
+            }
+            float ppm_eq = __calculate_multigas_ppm(raw_value, GM702B_PPM_MIN, GM702B_PPM_MAX);
+            __sensor_present_data_update(&__g_sensor_present_data.co, ppm_eq);
+            xSemaphoreTake(__g_data_mutex, portMAX_DELAY);
+            __g_current_sensor_data.multigas_gm702b[0] = ppm_eq;
+            __g_current_sensor_data.multigas_gm702b[1] = raw_value;
+            ESP_LOGI(TAG, "CO: ppm(eq)=%.1f (raw=%.2f)", ppm_eq, raw_value);
+            xSemaphoreGive(__g_data_mutex);
+            break;
+        }
+
+        case PKT_TYPE_SENSOR_TEMP_EXTERNAL: {
+            if (len < (sizeof(float) + 1)) break;
+            float value;
+            memcpy(&value, &p_data[1], sizeof(value));
+            if (!FLOAT_IS_VALID(value)) {
+                ESP_LOGW(TAG, "Temp external: invalid float, dropping");
+                break;
+            }
+            ESP_LOGI(TAG, "Temp external: %.1f C", value);
+            __sensor_present_data_update(&__g_sensor_present_data.temp_ext, value);
+            xSemaphoreTake(__g_data_mutex, portMAX_DELAY);
+            __g_current_sensor_data.temp_external = value;
+            xSemaphoreGive(__g_data_mutex);
+            break;
+        }
+
+        case PKT_TYPE_SENSOR_HUMIDITY_EXTERNAL: {
+            if (len < (sizeof(float) + 1)) break;
+            float value;
+            memcpy(&value, &p_data[1], sizeof(value));
+            if (!FLOAT_IS_VALID(value)) {
+                ESP_LOGW(TAG, "Humidity external: invalid float, dropping");
+                break;
+            }
+            ESP_LOGI(TAG, "Humidity external: %.1f %%", value);
+            __sensor_present_data_update(&__g_sensor_present_data.humidity_ext, value);
+            xSemaphoreTake(__g_data_mutex, portMAX_DELAY);
+            __g_current_sensor_data.humidity_external = value;
+            xSemaphoreGive(__g_data_mutex);
+            break;
+        }
 
         default:
             break;
@@ -722,9 +1027,6 @@ static void esp32_rp2040_comm_task(void *arg)
     
     while (1) {
         int len = uart_read_bytes(ESP32_COMM_PORT_NUM, buf, (BUF_SIZE - 1), 1 / portTICK_PERIOD_MS);
-#if SENSOR_COMM_DEBUG
-        ESP_LOGI(TAG, "len:%d",  len);
-#endif 
         int index  = 0;
         uint8_t *p_buf_start =  buf;
         uint8_t *p_buf_end = buf;
@@ -815,6 +1117,89 @@ static void __view_event_handler(void* handler_args, esp_event_base_t base, int3
             __sensor_history_data_get( &__g_sensor_history_data.tvoc,  &data);
             data.sensor_type = SENSOR_DATA_TVOC;
             data.resolution  = 0;
+            esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA_HISTORY, &data, sizeof(struct view_data_sensor_history_data ), portMAX_DELAY);
+            break;
+        }
+
+        /* Extended sensor history events */
+        case VIEW_EVENT_SENSOR_TEMP_EXT_HISTORY: {
+            ESP_LOGI(TAG, "event: VIEW_EVENT_SENSOR_TEMP_EXT_HISTORY");
+            struct view_data_sensor_history_data data;
+            __sensor_history_data_get( &__g_sensor_history_data.temp_ext,  &data);
+            data.sensor_type = SENSOR_DATA_TEMP_EXT;
+            data.resolution  = 1;
+            esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA_HISTORY, &data, sizeof(struct view_data_sensor_history_data ), portMAX_DELAY);
+            break;
+        }
+        case VIEW_EVENT_SENSOR_HUMIDITY_EXT_HISTORY: {
+            ESP_LOGI(TAG, "event: VIEW_EVENT_SENSOR_HUMIDITY_EXT_HISTORY");
+            struct view_data_sensor_history_data data;
+            __sensor_history_data_get( &__g_sensor_history_data.humidity_ext,  &data);
+            data.sensor_type = SENSOR_DATA_HUMIDITY_EXT;
+            data.resolution  = 0;
+            esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA_HISTORY, &data, sizeof(struct view_data_sensor_history_data ), portMAX_DELAY);
+            break;
+        }
+        case VIEW_EVENT_SENSOR_PM1_0_HISTORY: {
+            ESP_LOGI(TAG, "event: VIEW_EVENT_SENSOR_PM1_0_HISTORY");
+            struct view_data_sensor_history_data data;
+            __sensor_history_data_get( &__g_sensor_history_data.pm1_0,  &data);
+            data.sensor_type = SENSOR_DATA_PM1_0;
+            data.resolution  = 1;
+            esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA_HISTORY, &data, sizeof(struct view_data_sensor_history_data ), portMAX_DELAY);
+            break;
+        }
+        case VIEW_EVENT_SENSOR_PM2_5_HISTORY: {
+            ESP_LOGI(TAG, "event: VIEW_EVENT_SENSOR_PM2_5_HISTORY");
+            struct view_data_sensor_history_data data;
+            __sensor_history_data_get( &__g_sensor_history_data.pm2_5,  &data);
+            data.sensor_type = SENSOR_DATA_PM2_5;
+            data.resolution  = 1;
+            esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA_HISTORY, &data, sizeof(struct view_data_sensor_history_data ), portMAX_DELAY);
+            break;
+        }
+        case VIEW_EVENT_SENSOR_PM10_HISTORY: {
+            ESP_LOGI(TAG, "event: VIEW_EVENT_SENSOR_PM10_HISTORY");
+            struct view_data_sensor_history_data data;
+            __sensor_history_data_get( &__g_sensor_history_data.pm10,  &data);
+            data.sensor_type = SENSOR_DATA_PM10;
+            data.resolution  = 1;
+            esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA_HISTORY, &data, sizeof(struct view_data_sensor_history_data ), portMAX_DELAY);
+            break;
+        }
+        case VIEW_EVENT_SENSOR_NO2_HISTORY: {
+            ESP_LOGI(TAG, "event: VIEW_EVENT_SENSOR_NO2_HISTORY");
+            struct view_data_sensor_history_data data;
+            __sensor_history_data_get( &__g_sensor_history_data.no2,  &data);
+            data.sensor_type = SENSOR_DATA_NO2;
+            data.resolution  = 2;
+            esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA_HISTORY, &data, sizeof(struct view_data_sensor_history_data ), portMAX_DELAY);
+            break;
+        }
+        case VIEW_EVENT_SENSOR_C2H5OH_HISTORY: {
+            ESP_LOGI(TAG, "event: VIEW_EVENT_SENSOR_C2H5OH_HISTORY");
+            struct view_data_sensor_history_data data;
+            __sensor_history_data_get( &__g_sensor_history_data.c2h5oh,  &data);
+            data.sensor_type = SENSOR_DATA_C2H5OH;
+            data.resolution  = 2;
+            esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA_HISTORY, &data, sizeof(struct view_data_sensor_history_data ), portMAX_DELAY);
+            break;
+        }
+        case VIEW_EVENT_SENSOR_VOC_HISTORY: {
+            ESP_LOGI(TAG, "event: VIEW_EVENT_SENSOR_VOC_HISTORY");
+            struct view_data_sensor_history_data data;
+            __sensor_history_data_get( &__g_sensor_history_data.voc,  &data);
+            data.sensor_type = SENSOR_DATA_VOC;
+            data.resolution  = 2;
+            esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA_HISTORY, &data, sizeof(struct view_data_sensor_history_data ), portMAX_DELAY);
+            break;
+        }
+        case VIEW_EVENT_SENSOR_CO_HISTORY: {
+            ESP_LOGI(TAG, "event: VIEW_EVENT_SENSOR_CO_HISTORY");
+            struct view_data_sensor_history_data data;
+            __sensor_history_data_get( &__g_sensor_history_data.co,  &data);
+            data.sensor_type = SENSOR_DATA_CO;
+            data.resolution  = 2;
             esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA_HISTORY, &data, sizeof(struct view_data_sensor_history_data ), portMAX_DELAY);
             break;
         }
@@ -1052,11 +1437,48 @@ int indicator_sensor_init(void)
     ESP_ERROR_CHECK(esp_event_handler_instance_register_with(view_event_handle, 
                                                             VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_TVOC_HISTORY, 
                                                             __view_event_handler, NULL, NULL));
-    ESP_ERROR_CHECK(esp_event_handler_instance_register_with(view_event_handle, 
-                                                            VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_CO2_HISTORY, 
+    ESP_ERROR_CHECK(esp_event_handler_instance_register_with(view_event_handle,
+                                                            VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_CO2_HISTORY,
                                                             __view_event_handler, NULL, NULL));
-    ESP_ERROR_CHECK(esp_event_handler_instance_register_with(view_event_handle, 
-                                                            VIEW_EVENT_BASE, VIEW_EVENT_SHUTDOWN, 
+    /* Extended sensor history events */
+    ESP_ERROR_CHECK(esp_event_handler_instance_register_with(view_event_handle,
+                                                            VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_TEMP_EXT_HISTORY,
                                                             __view_event_handler, NULL, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register_with(view_event_handle,
+                                                            VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_HUMIDITY_EXT_HISTORY,
+                                                            __view_event_handler, NULL, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register_with(view_event_handle,
+                                                            VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_PM1_0_HISTORY,
+                                                            __view_event_handler, NULL, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register_with(view_event_handle,
+                                                            VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_PM2_5_HISTORY,
+                                                            __view_event_handler, NULL, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register_with(view_event_handle,
+                                                            VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_PM10_HISTORY,
+                                                            __view_event_handler, NULL, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register_with(view_event_handle,
+                                                            VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_NO2_HISTORY,
+                                                            __view_event_handler, NULL, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register_with(view_event_handle,
+                                                            VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_C2H5OH_HISTORY,
+                                                            __view_event_handler, NULL, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register_with(view_event_handle,
+                                                            VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_VOC_HISTORY,
+                                                            __view_event_handler, NULL, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register_with(view_event_handle,
+                                                            VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_CO_HISTORY,
+                                                            __view_event_handler, NULL, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register_with(view_event_handle,
+                                                            VIEW_EVENT_BASE, VIEW_EVENT_SHUTDOWN,
+                                                            __view_event_handler, NULL, NULL));
+}
+
+int indicator_sensor_get_data(struct view_data_sensor *out_data)
+{
+    if (!out_data) return -1;
+    xSemaphoreTake(__g_data_mutex, portMAX_DELAY);
+    memcpy(out_data, &__g_current_sensor_data, sizeof(struct view_data_sensor));
+    xSemaphoreGive(__g_data_mutex);
+    return 0;
 }
 

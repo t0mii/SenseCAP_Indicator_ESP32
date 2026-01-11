@@ -4,6 +4,8 @@
 #include "esp_http_client.h"
 #include "cJSON.h"
 #include "indicator_time.h"
+#include <strings.h>
+#include <stdlib.h>
 
 #include "lwip/err.h"
 #include "lwip/sockets.h"
@@ -298,37 +300,103 @@ static int __city_get(void)
 #endif
 
 /* ---------------------------------------------------------- */
-//  time zone 
+//  time zone
 /* ---------------------------------------------------------- */
+
+/* Fallback timezone lookup for known cities when API fails */
+typedef struct {
+    const char *city;
+    int offset_seconds;  /* UTC offset in seconds (winter time) */
+} city_tz_entry_t;
+
+static const city_tz_entry_t known_city_timezones[] = {
+    /* Central European Time (CET) - UTC+1 */
+    {"Vienna", 3600}, {"Wien", 3600},
+    {"Berlin", 3600}, {"Munich", 3600}, {"Frankfurt", 3600}, {"Hamburg", 3600},
+    {"Zurich", 3600}, {"Bern", 3600}, {"Geneva", 3600},
+    {"Paris", 3600}, {"Lyon", 3600}, {"Marseille", 3600},
+    {"Amsterdam", 3600}, {"Rotterdam", 3600},
+    {"Brussels", 3600}, {"Antwerp", 3600},
+    {"Rome", 3600}, {"Milan", 3600}, {"Naples", 3600},
+    {"Madrid", 3600}, {"Barcelona", 3600},
+    {"Warsaw", 3600}, {"Krakow", 3600},
+    {"Prague", 3600}, {"Brno", 3600},
+    {"Budapest", 3600},
+    {"Stockholm", 3600}, {"Oslo", 3600}, {"Copenhagen", 3600},
+    /* Eastern European Time (EET) - UTC+2 */
+    {"Helsinki", 7200}, {"Tallinn", 7200}, {"Riga", 7200}, {"Vilnius", 7200},
+    {"Athens", 7200}, {"Bucharest", 7200}, {"Sofia", 7200},
+    {"Kyiv", 7200}, {"Kiev", 7200},
+    /* Western European Time (WET) - UTC+0 */
+    {"London", 0}, {"Dublin", 0}, {"Lisbon", 0}, {"Porto", 0},
+    {"Reykjavik", 0},
+    /* Moscow Time - UTC+3 */
+    {"Moscow", 10800}, {"Saint Petersburg", 10800},
+    /* US Eastern - UTC-5 */
+    {"New York", -18000}, {"Boston", -18000}, {"Philadelphia", -18000},
+    {"Washington", -18000}, {"Miami", -18000}, {"Atlanta", -18000},
+    /* US Central - UTC-6 */
+    {"Chicago", -21600}, {"Houston", -21600}, {"Dallas", -21600},
+    /* US Mountain - UTC-7 */
+    {"Denver", -25200}, {"Phoenix", -25200},
+    /* US Pacific - UTC-8 */
+    {"Los Angeles", -28800}, {"San Francisco", -28800}, {"Seattle", -28800},
+    {NULL, 0}  /* End marker */
+};
+
+static int __get_city_timezone_offset(const char *city)
+{
+    if (city == NULL || strlen(city) == 0) {
+        return -1;  /* Unknown */
+    }
+
+    for (int i = 0; known_city_timezones[i].city != NULL; i++) {
+        if (strcasecmp(city, known_city_timezones[i].city) == 0) {
+            ESP_LOGI(TAG, "City '%s' matched, offset=%d seconds",
+                     city, known_city_timezones[i].offset_seconds);
+            return known_city_timezones[i].offset_seconds;
+        }
+    }
+
+    return -1;  /* Not found */
+}
 
 static int __time_zone_data_prase(const char *p_str)
 {
-    //prase
     int ret = 0;
 
     cJSON *root = NULL;
-    cJSON* cjson_item = NULL;
-    cJSON* cjson_item_child = NULL;
+    cJSON *cjson_item = NULL;
+    cJSON *cjson_item_child = NULL;
+    cJSON *cjson_tz = NULL;
 
     root = cJSON_Parse(p_str);
     if( root == NULL ) {
-        ESP_LOGI(TAG, "cJSON_Parse err");
+        ESP_LOGE(TAG, "cJSON_Parse failed for timezone data");
         return -1;
     }
-   
+
+    /* Log the timezone name */
+    cjson_tz = cJSON_GetObjectItem(root, "timeZone");
+    if( cjson_tz != NULL && cjson_tz->valuestring != NULL) {
+        ESP_LOGI(TAG, "Timezone name: %s", cjson_tz->valuestring);
+    }
+
     cjson_item = cJSON_GetObjectItem(root, "currentUtcOffset");
     if( cjson_item != NULL ) {
         cjson_item_child = cJSON_GetObjectItem(cjson_item, "seconds");
         if( cjson_item_child != NULL) {
             __g_city_model.local_utc_offset = cjson_item_child->valueint;
-            ESP_LOGI(TAG, "local_utc_offset:%ds", cjson_item_child->valueint );
+            ESP_LOGI(TAG, "Parsed UTC offset: %d seconds (%d hours)",
+                     cjson_item_child->valueint, cjson_item_child->valueint / 3600);
+        } else {
+            ESP_LOGW(TAG, "No 'seconds' field in currentUtcOffset");
         }
+    } else {
+        ESP_LOGW(TAG, "No 'currentUtcOffset' field in response");
     }
 
-    //todo 
-prase_end:
     cJSON_Delete(root);
-    
     return ret;
 }
 
@@ -440,24 +508,23 @@ static int __time_zone_get(char *ip)
 
     len = https_get_request(cfg, time_zone_url, time_zone_request);
     if( len > 0) {
-        // TIME ZONE RESPONSE: HTTP/1.1 200 OK
-        // Server: nginx/1.18.0 (Ubuntu)
-        // Date: Thu, 02 Feb 2023 09:40:26 GMT
-        // Content-Type: application/json; charset=utf-8
-        // Transfer-Encoding: chunked
-        // Connection: keep-alive
-
-        // 128
-        // {"timeZone":"UTC","currentLocalTime":"2023-02-02T09:40:26.1233729","currentUtcOffset":{"seconds":0,"milliseconds":0,"ticks":0,"nanoseconds":0},"standardUtcOffset":{"seconds":0,"milliseconds":0,"ticks":0,"nanoseconds":0},"hasDayLightSaving":false,"isDayLightSavingActive":false,"dstInterval":null}
-        // 0
-        char *p_json = strstr(local_response_buffer, "\r\n\r\n");
-        if( p_json ) {
-            p_json =  p_json + 4 + 3; //todo
-            return __time_zone_data_prase(p_json);
+        // Find the JSON start - skip headers and chunk size
+        char *p_body = strstr(local_response_buffer, "\r\n\r\n");
+        if( p_body ) {
+            p_body += 4;  // Skip \r\n\r\n
+            // Find the actual JSON start ('{' character) - handles any chunk size length
+            char *p_json = strchr(p_body, '{');
+            if( p_json ) {
+                ESP_LOGI(TAG, "Timezone JSON: %.100s...", p_json);
+                return __time_zone_data_prase(p_json);
+            } else {
+                ESP_LOGE(TAG, "No JSON found in timezone response");
+                return -1;
+            }
         } else {
+            ESP_LOGE(TAG, "No body separator found in timezone response");
             return -1;
         }
-       
     }
     return -1;
 }
@@ -688,24 +755,23 @@ static int __time_zone_get(char *ip)
     len = https_mbedtls_request("www.timeapi.io", "443", time_zone_request, len);
 
     if( len > 0) {
-        // TIME ZONE RESPONSE: HTTP/1.1 200 OK
-        // Server: nginx/1.18.0 (Ubuntu)
-        // Date: Thu, 02 Feb 2023 09:40:26 GMT
-        // Content-Type: application/json; charset=utf-8
-        // Transfer-Encoding: chunked
-        // Connection: keep-alive
-
-        // 128
-        // {"timeZone":"UTC","currentLocalTime":"2023-02-02T09:40:26.1233729","currentUtcOffset":{"seconds":0,"milliseconds":0,"ticks":0,"nanoseconds":0},"standardUtcOffset":{"seconds":0,"milliseconds":0,"ticks":0,"nanoseconds":0},"hasDayLightSaving":false,"isDayLightSavingActive":false,"dstInterval":null}
-        // 0
-        char *p_json = strstr(local_response_buffer, "\r\n\r\n");
-        if( p_json ) {
-            p_json =  p_json + 4 + 3; //todo
-            return __time_zone_data_prase(p_json);
+        // Find the JSON start - skip headers and chunk size
+        char *p_body = strstr(local_response_buffer, "\r\n\r\n");
+        if( p_body ) {
+            p_body += 4;  // Skip \r\n\r\n
+            // Find the actual JSON start ('{' character) - handles any chunk size length
+            char *p_json = strchr(p_body, '{');
+            if( p_json ) {
+                ESP_LOGI(TAG, "Timezone JSON: %.100s...", p_json);
+                return __time_zone_data_prase(p_json);
+            } else {
+                ESP_LOGE(TAG, "No JSON found in timezone response");
+                return -1;
+            }
         } else {
+            ESP_LOGE(TAG, "No body separator found in timezone response");
             return -1;
         }
-       
     }
     return -1;
 }
@@ -749,19 +815,65 @@ static void __indicator_http_task(void *p_arg)
         }
         if(  net_flag && ip_flag && !time_zone_flag) {
             ESP_LOGI(TAG, "Get time zone...");
-            err =  __time_zone_get(__g_city_model.ip); 
-            if( err == 0) {
-                char zone_str[32];
-                float zone = __g_city_model.local_utc_offset / 3600.0;
+            err =  __time_zone_get(__g_city_model.ip);
 
-                if( zone >= 0) {
-                    snprintf(zone_str, sizeof(zone_str) - 1, "UTC-%.1f", zone);
-                } else {
-                    snprintf(zone_str, sizeof(zone_str) - 1, "UTC+%.1f", 0 - zone);
+            /* Use city-based fallback if API failed or returned 0 offset */
+            if (err != 0 || __g_city_model.local_utc_offset == 0) {
+                int city_offset = __get_city_timezone_offset(__g_city_model.city);
+                if (city_offset != -1) {
+                    ESP_LOGI(TAG, "Using city-based timezone fallback for '%s': %d seconds",
+                             __g_city_model.city, city_offset);
+                    __g_city_model.local_utc_offset = city_offset;
+                    err = 0;  /* Mark as success */
+                } else if (err != 0) {
+                    ESP_LOGW(TAG, "Timezone API failed and no city fallback for '%s'",
+                             __g_city_model.city);
                 }
+            }
+
+            if( err == 0 && __g_city_model.local_utc_offset != 0) {
+                char zone_str[64];
+                int offset_hours = __g_city_model.local_utc_offset / 3600;
+                int offset_mins = abs((__g_city_model.local_utc_offset % 3600) / 60);
+
+                ESP_LOGI(TAG, "UTC offset: %d seconds = %d hours %d mins",
+                         __g_city_model.local_utc_offset, offset_hours, offset_mins);
+
+                /* POSIX TZ format: sign is inverted (UTC-1 means UTC+1 in common notation)
+                 * For Vienna (CET/CEST): offset_hours=1 in winter, 2 in summer
+                 * We create "UTC-1" for UTC+1, "UTC+5" for UTC-5 */
+                if (offset_mins == 0) {
+                    if (offset_hours >= 0) {
+                        snprintf(zone_str, sizeof(zone_str) - 1, "UTC-%d", offset_hours);
+                    } else {
+                        snprintf(zone_str, sizeof(zone_str) - 1, "UTC+%d", -offset_hours);
+                    }
+                } else {
+                    if (offset_hours >= 0) {
+                        snprintf(zone_str, sizeof(zone_str) - 1, "UTC-%d:%02d", offset_hours, offset_mins);
+                    } else {
+                        snprintf(zone_str, sizeof(zone_str) - 1, "UTC+%d:%02d", -offset_hours, offset_mins);
+                    }
+                }
+                ESP_LOGI(TAG, "Setting TZ to: %s", zone_str);
                 indicator_time_net_zone_set( zone_str );
 
                 time_zone_flag = true;
+            } else if (city_flag) {
+                /* City detected but no timezone - try city fallback one more time */
+                int city_offset = __get_city_timezone_offset(__g_city_model.city);
+                if (city_offset != -1) {
+                    char zone_str[64];
+                    int offset_hours = city_offset / 3600;
+                    if (offset_hours >= 0) {
+                        snprintf(zone_str, sizeof(zone_str) - 1, "UTC-%d", offset_hours);
+                    } else {
+                        snprintf(zone_str, sizeof(zone_str) - 1, "UTC+%d", -offset_hours);
+                    }
+                    ESP_LOGI(TAG, "City fallback TZ: %s", zone_str);
+                    indicator_time_net_zone_set(zone_str);
+                    time_zone_flag = true;
+                }
             }
         }
 

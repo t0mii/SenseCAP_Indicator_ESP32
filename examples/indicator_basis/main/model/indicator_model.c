@@ -5,6 +5,7 @@
 #include "indicator_time.h"
 #include "indicator_btn.h"
 #include "indicator_city.h"
+#include "indicator_mariadb.h"
 
 int indicator_model_init(void)
 {
@@ -15,4 +16,5 @@ int indicator_model_init(void)
     indicator_city_init();
     indicator_display_init();  // lcd bl on
     indicator_btn_init();
+    indicator_mariadb_init();
 }

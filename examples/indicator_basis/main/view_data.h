@@ -95,6 +95,16 @@ enum sensor_data_type{
     SENSOR_DATA_TVOC,
     SENSOR_DATA_TEMP,
     SENSOR_DATA_HUMIDITY,
+    /* Extended sensors */
+    SENSOR_DATA_TEMP_EXT,
+    SENSOR_DATA_HUMIDITY_EXT,
+    SENSOR_DATA_PM1_0,
+    SENSOR_DATA_PM2_5,
+    SENSOR_DATA_PM10,
+    SENSOR_DATA_NO2,
+    SENSOR_DATA_C2H5OH,
+    SENSOR_DATA_VOC,
+    SENSOR_DATA_CO,
 };
 
 struct view_data_sensor_data
@@ -109,12 +119,28 @@ struct view_data_sensor_history_data
     struct sensor_data_average data_day[24];
     struct sensor_data_minmax data_week[7];
     uint8_t resolution;
-    
+
     float day_min;
     float day_max;
-    
+
     float week_min;
     float week_max;
+};
+
+struct view_data_sensor {
+    float co2;
+    float temp_internal;
+    float humidity_internal;
+    float tvoc;
+    float temp_external;
+    float humidity_external;
+    float pm1_0;
+    float pm2_5;
+    float pm10;
+    float multigas_gm102b[2];  // [0]=ppm(eq), [1]=voltage (NO2)
+    float multigas_gm302b[2];  // [0]=ppm(eq), [1]=voltage (C2H5OH)
+    float multigas_gm502b[2];  // [0]=ppm(eq), [1]=voltage (VOC)
+    float multigas_gm702b[2];  // [0]=ppm(eq), [1]=voltage (CO)
 };
 
 enum {
@@ -136,6 +162,16 @@ enum {
     VIEW_EVENT_SENSOR_HUMIDITY_HISTORY,
     VIEW_EVENT_SENSOR_TVOC_HISTORY,
     VIEW_EVENT_SENSOR_CO2_HISTORY,
+    /* Extended sensor history events */
+    VIEW_EVENT_SENSOR_TEMP_EXT_HISTORY,
+    VIEW_EVENT_SENSOR_HUMIDITY_EXT_HISTORY,
+    VIEW_EVENT_SENSOR_PM1_0_HISTORY,
+    VIEW_EVENT_SENSOR_PM2_5_HISTORY,
+    VIEW_EVENT_SENSOR_PM10_HISTORY,
+    VIEW_EVENT_SENSOR_NO2_HISTORY,
+    VIEW_EVENT_SENSOR_C2H5OH_HISTORY,
+    VIEW_EVENT_SENSOR_VOC_HISTORY,
+    VIEW_EVENT_SENSOR_CO_HISTORY,
 
     VIEW_EVENT_SENSOR_DATA_HISTORY, //struct view_data_sensor_history_data
 

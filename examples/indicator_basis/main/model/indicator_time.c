@@ -81,31 +81,42 @@ static void __time_sync_stop(void)
 
 static void __time_zone_set(struct view_data_time_cfg *p_cfg)
 {
-    if ( !p_cfg->auto_update_zone) {
-        
-        int8_t zone = p_cfg->zone;
-        char zone_str[32];
+    char zone_str[64] = {0};
 
+    if ( !p_cfg->auto_update_zone) {
+        /* Manual timezone setting */
+        int8_t zone = p_cfg->zone;
+
+        /* Daylight saving adds 1 hour to the offset */
         if( p_cfg->daylight) {
-            zone -=1; //todo
+            zone += 1;
         }
+        /* POSIX TZ format: UTC-X means local time is X hours ahead of UTC */
         if( zone >= 0) {
             snprintf(zone_str, sizeof(zone_str) - 1, "UTC-%d", zone);
         } else {
-            snprintf(zone_str, sizeof(zone_str) - 1, "UTC+%d", 0 - zone);
+            snprintf(zone_str, sizeof(zone_str) - 1, "UTC+%d", -zone);
         }
-        setenv("TZ", zone_str, 1);
+        ESP_LOGI(TAG, "Manual timezone: zone=%d, daylight=%d, TZ=%s",
+                 p_cfg->zone, p_cfg->daylight, zone_str);
     } else {
-
-        char net_zone[64] = {0};
+        /* Auto timezone from network */
         xSemaphoreTake(__g_data_mutex, portMAX_DELAY);
-        memcpy(net_zone, &__g_time_model.net_zone, sizeof(net_zone));
+        strncpy(zone_str, __g_time_model.net_zone, sizeof(zone_str) - 1);
         xSemaphoreGive(__g_data_mutex);
 
-        if( strlen(net_zone) > 0 ) {
-            setenv("TZ", net_zone, 1);
+        if( strlen(zone_str) == 0 ) {
+            ESP_LOGW(TAG, "Auto timezone enabled but no network zone available yet, using UTC");
+            strncpy(zone_str, "UTC-0", sizeof(zone_str) - 1);
+        } else {
+            ESP_LOGI(TAG, "Auto timezone from network: TZ=%s", zone_str);
         }
     }
+
+    /* Apply timezone */
+    ESP_LOGI(TAG, "Applying TZ environment variable: %s", zone_str);
+    setenv("TZ", zone_str, 1);
+    tzset();
 }
 
 static void __time_cfg(struct view_data_time_cfg *p_cfg, bool set_time)
@@ -256,16 +267,29 @@ int indicator_time_init(void)
 
 int indicator_time_net_zone_set( char *p)
 {
+    ESP_LOGI(TAG, "Setting network timezone: %s", p);
+
     xSemaphoreTake(__g_data_mutex, portMAX_DELAY);
-    strcpy(__g_time_model.net_zone, p);
+    strncpy(__g_time_model.net_zone, p, sizeof(__g_time_model.net_zone) - 1);
     xSemaphoreGive(__g_data_mutex);
 
     struct view_data_time_cfg cfg;
     __time_cfg_get(&cfg);
 
-    if( cfg.auto_update ) {
-        __time_zone_set(&cfg); 
-    }
+    /* Always apply timezone when received from network */
+    __time_zone_set(&cfg);
+
+    /* Log current time after timezone change */
+    time_t now;
+    struct tm timeinfo;
+    time(&now);
+    localtime_r(&now, &timeinfo);
+    char strftime_buf[64];
+    strftime(strftime_buf, sizeof(strftime_buf), "%Y-%m-%d %H:%M:%S", &timeinfo);
+    ESP_LOGI(TAG, "Local time after TZ set: %s", strftime_buf);
+
+    /* Force display update */
     bool time_format_24 = cfg.time_format_24;
     esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_TIME, &time_format_24, sizeof(time_format_24), portMAX_DELAY);
+    return 0;
 }
