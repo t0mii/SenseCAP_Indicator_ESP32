@@ -2,6 +2,19 @@
 
 This is a modified firmware for the **SenseCAP Indicator D1S** that adds support for additional Grove sensors and MariaDB database export functionality.
 
+> **Blog Post:** [Building an Advanced Air Quality Monitor with AI-Assisted Programming](https://postl.ai/2026/01/11/building-a-advanced-air-quality-monitor-with-ai-assisted-programming/)
+
+## Photos
+
+### Device with Sensors
+![Device with Sensors](images/device-with-sensors.jpg)
+
+### Sensor UI
+![Sensor UI](images/sensor-ui.jpg)
+
+### MariaDB Export Settings
+![MariaDB Export](images/mariadb-export.jpg)
+
 ## Extended Sensors
 
 In addition to the original built-in sensors (SCD4x CO2, SGP40 TVOC), this firmware supports the following **Grove I2C sensors**:
@@ -114,4 +127,4 @@ Based on the original [SenseCAP Indicator](https://github.com/Seeed-Solution/Sen
 ## Credits
 
 - Original firmware: [Seeed Studio](https://www.seeedstudio.com/)
-- Extended sensor support and MariaDB export: Custom modifications
+- Extended sensor support and MariaDB export: AI-assisted development with [Claude](https://claude.ai)
