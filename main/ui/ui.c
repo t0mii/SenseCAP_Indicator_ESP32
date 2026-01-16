@@ -1527,12 +1527,12 @@ void ui_screen_sensor_chart_screen_init()
 
 
     //lv_chart_set_axis_tick(ui_sensor_chart_day, LV_CHART_AXIS_PRIMARY_Y, 0, 0, 5, 1, true, 80);
-    lv_chart_set_axis_tick(ui_sensor_chart_day, LV_CHART_AXIS_PRIMARY_X, 0, 0, 24, 1, true, 50);
+    lv_chart_set_axis_tick(ui_sensor_chart_day, LV_CHART_AXIS_PRIMARY_X, 0, 0, 12, 1, true, 50);
     //lv_chart_set_range(ui_sensor_chart_day, LV_CHART_AXIS_PRIMARY_X, 0, 200);
     lv_chart_set_range(ui_sensor_chart_day, LV_CHART_AXIS_PRIMARY_Y, -200, 600); //modify
 
-    lv_chart_set_div_line_count(ui_sensor_chart_day, 0, 24);
-    lv_chart_set_point_count(ui_sensor_chart_day, 24);
+    lv_chart_set_div_line_count(ui_sensor_chart_day, 0, 12);
+    lv_chart_set_point_count(ui_sensor_chart_day, 48);
 
 
     lv_obj_set_style_border_side(ui_sensor_chart_day, LV_BORDER_SIDE_RIGHT | LV_BORDER_SIDE_BOTTOM, 0);

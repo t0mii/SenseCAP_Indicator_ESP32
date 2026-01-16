@@ -912,7 +912,7 @@ typedef struct sensor_chart_display
     struct view_data_sensor_history_data *p_info;
 } sensor_chart_display_t;
 
-static char date_hour[24][6] = { };
+static char date_hour[48][6] = { };
 static char date_day[7][6] = { };
 static uint16_t sensor_data_resolution = 0;
 static uint16_t sensor_data_multiple = 1;
@@ -986,7 +986,9 @@ static void event_chart_day_cb(lv_event_t * e)
         lv_obj_draw_part_dsc_t * dsc = lv_event_get_param(e);
         /*Set the markers' text*/
         if(dsc->part == LV_PART_TICKS && dsc->id == LV_CHART_AXIS_PRIMARY_X) {
-            lv_snprintf(dsc->text, dsc->text_length, "%s", (char *)&date_hour[dsc->value][0]);
+            int idx = dsc->value * 4;
+            if(idx >= 48) idx = 47;
+            lv_snprintf(dsc->text, dsc->text_length, "%s", (char *)&date_hour[idx][0]);
         } else if(dsc->part == LV_PART_ITEMS) {
 
             /*Add  a line mask that keeps the area below the line*/
@@ -1106,7 +1108,7 @@ void sensor_chart_update(sensor_chart_display_t *p_display)
 	lv_chart_set_series_color(ui_sensor_chart_week, ui_sensor_chart_week_series_low, p_display->color);
 	lv_chart_set_series_color(ui_sensor_chart_week, ui_sensor_chart_week_series_hight, p_display->color);
 
-    for(i = 0; i < 24; i++) {
+    for(i = 0; i < 48; i++) {
     	if( p_info->data_day[i].valid ) {
     		lv_chart_set_value_by_id(ui_sensor_chart_day, ui_sensor_chart_day_series, i,  sensor_data_multiple * p_info->data_day[i].data );
     	} else {
@@ -1157,9 +1159,9 @@ void sensor_chart_event_init(void)
     float min=90;
     float max=10;
 
-    for(i = 0; i < 24; i++) { 
+    for(i = 0; i < 48; i++) { 
         default_sensor_info.data_day[i].data = (float)lv_rand(10, 90);
-        default_sensor_info.data_day[i].timestamp = time1 + i *3600;
+        default_sensor_info.data_day[i].timestamp = time1 + i * 1800;
         default_sensor_info.data_day[i].valid = true;
         
         if( min > default_sensor_info.data_day[i].data) {

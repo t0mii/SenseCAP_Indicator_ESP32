@@ -10,9 +10,7 @@
 #define SENSOR_HISTORY_DATA_DEBUG  0
 #define SENSOR_COMM_DEBUG    1
 
-/* History storage interval: 10 minutes (600 seconds)
- * With 24 data points, this covers 4 hours of recent data */
-#define HISTORY_INTERVAL_SECONDS  600
+#define HISTORY_INTERVAL_SECONDS  1800
 
 /* Validate float value - reject NaN and Inf */
 #define FLOAT_IS_VALID(f) (isfinite(f))
@@ -75,7 +73,7 @@ struct sensor_present_data
 };
 struct sensor_history_data
 {
-    struct sensor_data_average data_day[24];
+    struct sensor_data_average data_day[48];
     struct sensor_data_minmax data_week[7];
 };
 
@@ -158,15 +156,14 @@ static void __sensor_history_data_get( struct sensor_history_data  *p_history, s
     struct sensor_data_average *p_data_day = &p_history->data_day[0];
     struct sensor_data_minmax  *p_data_week = &p_history->data_week[0];
 
-    memcpy(p_data->data_day, (uint8_t *)p_data_day, sizeof( struct sensor_data_average) * 24);
+    memcpy(p_data->data_day, (uint8_t *)p_data_day, sizeof( struct sensor_data_average) * 48);
     memcpy(p_data->data_week, (uint8_t *)p_data_week, sizeof( struct sensor_data_minmax) * 7);
     
 
-    //calculate max and min 
     float min=10000;
     float max=-10000;
 
-    for(int i =0; i < 24; i++ ) {
+    for(int i =0; i < 48; i++ ) {
         struct sensor_data_average *p_item = p_data_day + i;
         if( p_item->valid ) {
             if( min > p_item->data ){
@@ -222,14 +219,13 @@ static void __sensor_history_data_save(void)
 
 static void __sensor_history_data_day_check(struct sensor_data_average p_data_day[], const char *p_sensor_name, time_t now)
 {
-    //check history data day - using 10-minute intervals
     int history_interval = 0;
     int cur_interval = 0;
 
-    history_interval = p_data_day[23].timestamp / HISTORY_INTERVAL_SECONDS;
+    history_interval = p_data_day[47].timestamp / HISTORY_INTERVAL_SECONDS;
     cur_interval = now / HISTORY_INTERVAL_SECONDS;
 
-    for( int i =0;  i < 24; i++) {
+    for( int i =0;  i < 48; i++) {
         if( p_data_day[i].valid) {
             ESP_LOGI(TAG, "%s index:%d, data:%.0f, time:%d", p_sensor_name, i, p_data_day[i].data, p_data_day[i].timestamp);
         }
@@ -237,18 +233,16 @@ static void __sensor_history_data_day_check(struct sensor_data_average p_data_da
 
     if( history_interval  >  cur_interval) {
         ESP_LOGI(TAG, "%s History day data pull ahead, clear data", p_sensor_name);
-        memset(p_data_day, 0, sizeof(struct sensor_data_average)*24);
+        memset(p_data_day, 0, sizeof(struct sensor_data_average)*48);
         return;
     }
 
-    /* Validate consecutive intervals - allow some tolerance for 10-min intervals */
-    for(int i =0; i < 23; i++ ) {
+    for(int i =0; i < 47; i++ ) {
        int interval1 = p_data_day[i].timestamp / HISTORY_INTERVAL_SECONDS;
        int interval2 = p_data_day[i+1].timestamp / HISTORY_INTERVAL_SECONDS;
-       /* Allow gap of 1-3 intervals (10-30 minutes) to handle slight timing variations */
        if( (interval2 - interval1) < 1 || (interval2 - interval1) > 3) {
             ESP_LOGI(TAG, "%s History day data error (gap=%d), clear data", p_sensor_name, interval2-interval1);
-            memset(p_data_day, 0, sizeof(struct sensor_data_average)*24);
+            memset(p_data_day, 0, sizeof(struct sensor_data_average)*48);
             return;
        }
     }
@@ -258,24 +252,24 @@ static void __sensor_history_data_day_check(struct sensor_data_average p_data_da
         return;
     }
 
-    if( history_interval < ( cur_interval - 23) ) {
+    if( history_interval < ( cur_interval - 47) ) {
         ESP_LOGI(TAG, "%s History day data expired, clear data!", p_sensor_name);
-        memset(p_data_day, 0, sizeof(struct sensor_data_average)*24);
+        memset(p_data_day, 0, sizeof(struct sensor_data_average)*48);
     } else {
 
-        int overlap_cnt = history_interval - ( cur_interval - 23) + 1;
+        int overlap_cnt = history_interval - ( cur_interval - 47) + 1;
 
         ESP_LOGI(TAG, "%s History day data  %d overlap !", p_sensor_name, overlap_cnt);
 
-        for(int i =0; i < 24; i++ ) {
+        for(int i =0; i < 48; i++ ) {
             if( i < overlap_cnt) {
-                p_data_day[i].data = p_data_day[24-overlap_cnt+i].data;
-                p_data_day[i].valid = p_data_day[24-overlap_cnt+i].valid;
-                p_data_day[i].timestamp = p_data_day[24-overlap_cnt+i].timestamp;
+                p_data_day[i].data = p_data_day[48-overlap_cnt+i].data;
+                p_data_day[i].valid = p_data_day[48-overlap_cnt+i].valid;
+                p_data_day[i].timestamp = p_data_day[48-overlap_cnt+i].timestamp;
             } else {
                 p_data_day[i].data = 0;
                 p_data_day[i].valid = false;
-                p_data_day[i].timestamp = now - (23 -i) * HISTORY_INTERVAL_SECONDS;
+                p_data_day[i].timestamp = now - (47 -i) * HISTORY_INTERVAL_SECONDS;
             }
         }
     }
@@ -352,41 +346,39 @@ static void __sensor_history_data_day_insert(struct sensor_data_average p_data_d
     int cur_interval = 0;
     struct tm timeinfo;
 
-    /* Calculate current 10-minute interval */
     localtime_r( &now, &timeinfo);
-    cur_interval = (timeinfo.tm_hour * 60 + timeinfo.tm_min) / 10;
+    cur_interval = (timeinfo.tm_hour * 60 + timeinfo.tm_min) / 30;
 
-    localtime_r( &(p_data_day[23].timestamp), &timeinfo);
-    history_interval = (timeinfo.tm_hour * 60 + timeinfo.tm_min) / 10;
+    localtime_r( &(p_data_day[47].timestamp), &timeinfo);
+    history_interval = (timeinfo.tm_hour * 60 + timeinfo.tm_min) / 30;
 
     if( cur_interval == history_interval) {
         return;
     }
 
-    for( int i =0;  i < 23; i++) {
+    for( int i =0;  i < 47; i++) {
         p_data_day[i].data = p_data_day[i+1].data;
         p_data_day[i].valid = p_data_day[i+1].valid;
         p_data_day[i].timestamp = p_data_day[i+1].timestamp;
 
         if( !p_data_day[i].valid) {
-            p_data_day[i].timestamp = now - (23 -i) * HISTORY_INTERVAL_SECONDS;
+            p_data_day[i].timestamp = now - (47 -i) * HISTORY_INTERVAL_SECONDS;
         }
     }
     if( p_cur->per_hour_cnt >=1) {
-        p_data_day[23].valid = true;
-        p_data_day[23].data = p_cur->average;
+        p_data_day[47].valid = true;
+        p_data_day[47].data = p_cur->average;
 
-        //clear present data
         p_cur->per_hour_cnt = 0;
         p_cur->sum = 0.0;
 
     }  else {
-        p_data_day[23].valid = false;
+        p_data_day[47].valid = false;
     }
-    p_data_day[23].timestamp = now;
+    p_data_day[47].timestamp = now;
 
 #if SENSOR_HISTORY_DATA_DEBUG
-    for( int i =0;  i < 24; i++) {
+    for( int i =0;  i < 48; i++) {
         if( p_data_day[i].valid) {
             ESP_LOGI(TAG, "index:%d, data:%.0f, time:%d", i, p_data_day[i].data, p_data_day[i].timestamp);
         }
@@ -563,13 +555,11 @@ static void __sensor_history_data_update_callback(void* arg)
     char strftime_buf[64];
     strftime(strftime_buf, sizeof(strftime_buf), "%c", &timeinfo);
 
-    /* Calculate current 10-minute interval (0-143 per day) */
-    int cur_interval = (timeinfo.tm_hour * 60 + timeinfo.tm_min) / 10;
+    int cur_interval = (timeinfo.tm_hour * 60 + timeinfo.tm_min) / 30;
     int cur_day  = timeinfo.tm_mday;
 
     ESP_LOGI(TAG, "__sensor_history_data_update_callback: %s (interval=%d)", strftime_buf, cur_interval);
 
-    //if greater than 2020 year mean time is right
     if( timeinfo.tm_year  < 120) {
         ESP_LOGI(TAG, "The time is not right!!!");
         return;
@@ -577,7 +567,6 @@ static void __sensor_history_data_update_callback(void* arg)
 
     __sensor_history_data_check( now);
 
-    /* Store data every 10 minutes (HISTORY_INTERVAL_SECONDS) */
     if( cur_interval != last_interval  &&  ((now - last_timestamp1) >= HISTORY_INTERVAL_SECONDS) ) {
         last_interval = cur_interval;
 
@@ -593,7 +582,7 @@ static void __sensor_history_data_update_callback(void* arg)
         xQueueSendFromISR(updata_queue_handle, &msg, NULL);
 
         last_timestamp1 = (now / HISTORY_INTERVAL_SECONDS) * HISTORY_INTERVAL_SECONDS;
-        ESP_LOGI(TAG, "Storing sensor data (10-min interval)");
+        ESP_LOGI(TAG, "Storing sensor data (30-min interval)");
     }
 
     if( cur_day != last_day  &&  ((now - last_timestamp2) > (3600*24))) {

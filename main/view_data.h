@@ -116,7 +116,7 @@ struct view_data_sensor_data
 struct view_data_sensor_history_data
 {
     enum sensor_data_type sensor_type;
-    struct sensor_data_average data_day[24];
+    struct sensor_data_average data_day[48];
     struct sensor_data_minmax data_week[7];
     uint8_t resolution;
 
