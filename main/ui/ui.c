@@ -1498,7 +1498,7 @@ void ui_screen_sensor_chart_screen_init()
 
 
 	lv_obj_t * tabview = lv_tabview_create( sensor_chat_panel, LV_DIR_TOP, 40);
-    lv_obj_t * ui_tab_day = lv_tabview_add_tab(tabview, "Day");
+    lv_obj_t * ui_tab_day = lv_tabview_add_tab(tabview, "Last 24h");
     lv_obj_t * ui_tab_week = lv_tabview_add_tab(tabview, "Week");
 
 	lv_obj_set_style_bg_color(tabview, lv_color_hex(0x101418), LV_PART_MAIN | LV_STATE_DEFAULT );

@@ -254,39 +254,53 @@ static void __display_cfg_event_init(void)
 
 /**********************  sensor chart **********************/
 
-static void ui_event_sensor_co2_chart( lv_event_t * e) {
-    lv_event_code_t event_code = lv_event_get_code(e);lv_obj_t * target = lv_event_get_target(e);
-    lv_obj_t * cur_screen = lv_scr_act();
-if ( event_code == LV_EVENT_CLICKED &&  cur_screen == ui_screen_sensor ) {
-    esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_CO2_HISTORY, NULL, 0, portMAX_DELAY);
+#define SENSOR_CLICK_DEBOUNCE_MS 500
+static uint32_t last_sensor_click_time = 0;
 
-    _ui_screen_change( ui_screen_sensor_chart, LV_SCR_LOAD_ANIM_OVER_LEFT, 200, 0);
+static bool sensor_click_debounce_check(void)
+{
+    uint32_t now = lv_tick_get();
+    if ((now - last_sensor_click_time) < SENSOR_CLICK_DEBOUNCE_MS) {
+        return false;
+    }
+    last_sensor_click_time = now;
+    return true;
 }
+
+static void ui_event_sensor_co2_chart( lv_event_t * e) {
+    lv_event_code_t event_code = lv_event_get_code(e);
+    lv_obj_t * cur_screen = lv_scr_act();
+    if (event_code == LV_EVENT_CLICKED && cur_screen == ui_screen_sensor && sensor_click_debounce_check()) {
+        esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_CO2_HISTORY, NULL, 0, portMAX_DELAY);
+        _ui_screen_change( ui_screen_sensor_chart, LV_SCR_LOAD_ANIM_OVER_LEFT, 200, 0);
+    }
 }
 
 static void ui_event_sensor_tvoc_chart( lv_event_t * e) {
-    lv_event_code_t event_code = lv_event_get_code(e);lv_obj_t * target = lv_event_get_target(e);
+    lv_event_code_t event_code = lv_event_get_code(e);
     lv_obj_t * cur_screen = lv_scr_act();
-if ( event_code == LV_EVENT_CLICKED &&  cur_screen == ui_screen_sensor ) {
-    esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_TVOC_HISTORY, NULL, 0, portMAX_DELAY);
-      _ui_screen_change( ui_screen_sensor_chart, LV_SCR_LOAD_ANIM_OVER_LEFT, 200, 0);
+    if (event_code == LV_EVENT_CLICKED && cur_screen == ui_screen_sensor && sensor_click_debounce_check()) {
+        esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_TVOC_HISTORY, NULL, 0, portMAX_DELAY);
+        _ui_screen_change( ui_screen_sensor_chart, LV_SCR_LOAD_ANIM_OVER_LEFT, 200, 0);
+    }
 }
-}
+
 static void ui_event_sensor_temp_chart( lv_event_t * e) {
-    lv_event_code_t event_code = lv_event_get_code(e);lv_obj_t * target = lv_event_get_target(e);
+    lv_event_code_t event_code = lv_event_get_code(e);
     lv_obj_t * cur_screen = lv_scr_act();
-if ( event_code == LV_EVENT_CLICKED &&  cur_screen == ui_screen_sensor ) {
-    esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_TEMP_HISTORY, NULL, 0, portMAX_DELAY);
-      _ui_screen_change( ui_screen_sensor_chart, LV_SCR_LOAD_ANIM_OVER_LEFT, 200, 0);
+    if (event_code == LV_EVENT_CLICKED && cur_screen == ui_screen_sensor && sensor_click_debounce_check()) {
+        esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_TEMP_HISTORY, NULL, 0, portMAX_DELAY);
+        _ui_screen_change( ui_screen_sensor_chart, LV_SCR_LOAD_ANIM_OVER_LEFT, 200, 0);
+    }
 }
-}
+
 static void ui_event_sensor_humidity_chart( lv_event_t * e) {
-    lv_event_code_t event_code = lv_event_get_code(e);lv_obj_t * target = lv_event_get_target(e);
+    lv_event_code_t event_code = lv_event_get_code(e);
     lv_obj_t * cur_screen = lv_scr_act();
-if ( event_code == LV_EVENT_CLICKED &&  cur_screen == ui_screen_sensor ) {
-     esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_HUMIDITY_HISTORY, NULL, 0, portMAX_DELAY);
-      _ui_screen_change( ui_screen_sensor_chart, LV_SCR_LOAD_ANIM_OVER_LEFT, 200, 0);
-}
+    if (event_code == LV_EVENT_CLICKED && cur_screen == ui_screen_sensor && sensor_click_debounce_check()) {
+        esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_HUMIDITY_HISTORY, NULL, 0, portMAX_DELAY);
+        _ui_screen_change( ui_screen_sensor_chart, LV_SCR_LOAD_ANIM_OVER_LEFT, 200, 0);
+    }
 }
 
 static void __sensor_chart_event_init(void)
