@@ -539,7 +539,16 @@ static void __sensor_history_data_week_update(time_t now)
 }
 
 
-static void __sensor_history_data_update_callback(void* arg)
+static void __sensor_history_data_timer_callback(void* arg)
+{
+    struct updata_queue_msg msg = {
+        .flag = 3,
+        .time = 0,
+    };
+    xQueueSendFromISR(updata_queue_handle, &msg, NULL);
+}
+
+static void __sensor_history_data_update_check(void)
 {
     static int last_interval = -1;
     static int last_day  = 32;
@@ -558,7 +567,7 @@ static void __sensor_history_data_update_callback(void* arg)
     int cur_interval = (timeinfo.tm_hour * 60 + timeinfo.tm_min) / 30;
     int cur_day  = timeinfo.tm_mday;
 
-    ESP_LOGI(TAG, "__sensor_history_data_update_callback: %s (interval=%d)", strftime_buf, cur_interval);
+    ESP_LOGI(TAG, "__sensor_history_data_update_check: %s (interval=%d)", strftime_buf, cur_interval);
 
     if( timeinfo.tm_year  < 120) {
         ESP_LOGI(TAG, "The time is not right!!!");
@@ -574,15 +583,10 @@ static void __sensor_history_data_update_callback(void* arg)
             last_timestamp1 = ((now - HISTORY_INTERVAL_SECONDS) / HISTORY_INTERVAL_SECONDS) * HISTORY_INTERVAL_SECONDS;
         }
 
-        struct updata_queue_msg msg = {
-            .flag = 1,
-            .time = last_timestamp1,
-        };
-
-        xQueueSendFromISR(updata_queue_handle, &msg, NULL);
+        ESP_LOGI(TAG, "Storing sensor data (30-min interval)");
+        __sensor_history_data_day_update(last_timestamp1);
 
         last_timestamp1 = (now / HISTORY_INTERVAL_SECONDS) * HISTORY_INTERVAL_SECONDS;
-        ESP_LOGI(TAG, "Storing sensor data (30-min interval)");
     }
 
     if( cur_day != last_day  &&  ((now - last_timestamp2) > (3600*24))) {
@@ -591,28 +595,21 @@ static void __sensor_history_data_update_callback(void* arg)
             last_timestamp2 = ((now - 3600 * 24) / (3600 * 24)) * (3600 * 24);
         }
 
-        struct updata_queue_msg msg = {
-            .flag = 2,
-            .time = last_timestamp2,
-        };
-
-        xQueueSendFromISR(updata_queue_handle, &msg, NULL);
+        __sensor_history_data_week_update(last_timestamp2);
 
         last_timestamp2 = ((now) / (3600 * 24)) * (3600 * 24); //Sample at the day
     }
 }
 
-static __sensor_history_data_update_init(void)
+static void __sensor_history_data_update_init(void)
 {
     const esp_timer_create_args_t timer_args = {
-            .callback = &__sensor_history_data_update_callback,
-            /* argument specified here will be passed to timer callback function */
-            .arg = (void*) sensor_history_data_timer_handle,
+            .callback = &__sensor_history_data_timer_callback,
+            .arg = NULL,
             .name = "sensor data update"
     };
     ESP_ERROR_CHECK( esp_timer_create(&timer_args, &sensor_history_data_timer_handle));
-    ESP_ERROR_CHECK(esp_timer_start_periodic(sensor_history_data_timer_handle, 1000000 * 10)); //10s
-
+    ESP_ERROR_CHECK(esp_timer_start_periodic(sensor_history_data_timer_handle, 1000000 * 10));
 }
 
 static void sensor_history_data_updata_task(void *arg)
@@ -626,9 +623,10 @@ static void sensor_history_data_updata_task(void *arg)
             } else if( msg.flag == 2) {
                 ESP_LOGI(TAG, "update week history data");
                 __sensor_history_data_week_update(msg.time);
+            } else if( msg.flag == 3) {
+                __sensor_history_data_update_check();
             }
         }
-
     }
 }
 
