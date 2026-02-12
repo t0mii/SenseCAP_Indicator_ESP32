@@ -71,7 +71,7 @@ static void data_cfg_event_cb(lv_event_t * e)
                 lv_obj_set_style_bg_color(lv_layer_top(), lv_palette_main(LV_PALETTE_GREY), 0);
                 lv_obj_set_size(calendar, 300, 330);
 
-                int year = 2023;
+                int year = 2026;
                 int mon  = 1;
                 int day  = 1;
                 char *p_date = lv_textarea_get_text(ui_date_cfg);
@@ -202,7 +202,7 @@ void ui_event_min( lv_event_t * e) {
 
 static void __time_cfg_envent_init(void)
 {
-    _g_date_cfg.year=2023;
+    _g_date_cfg.year=2026;
     _g_date_cfg.month=1;
     _g_date_cfg.day=1;
 

@@ -817,12 +817,14 @@ static void __indicator_http_task(void *p_arg)
             ESP_LOGI(TAG, "Get time zone...");
             err =  __time_zone_get(__g_city_model.ip);
 
-            /* Use city-based fallback if API failed or returned 0 offset */
-            if (err != 0 || __g_city_model.local_utc_offset == 0) {
+            /* ALWAYS prefer city-based lookup if city is known - API can return wrong offset due to IP geolocation errors */
+            {
                 int city_offset = __get_city_timezone_offset(__g_city_model.city);
                 if (city_offset != -1) {
-                    ESP_LOGI(TAG, "Using city-based timezone fallback for '%s': %d seconds",
-                             __g_city_model.city, city_offset);
+                    if (err == 0 && __g_city_model.local_utc_offset != city_offset) {
+                        ESP_LOGW(TAG, "API offset (%d) differs from city offset (%d) for '%s' - using city offset",
+                                 __g_city_model.local_utc_offset, city_offset, __g_city_model.city);
+                    }
                     __g_city_model.local_utc_offset = city_offset;
                     err = 0;  /* Mark as success */
                 } else if (err != 0) {

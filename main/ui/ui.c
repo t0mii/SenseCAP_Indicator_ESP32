@@ -1218,7 +1218,7 @@ lv_obj_set_x( ui_date_cfg, -5);
 //lv_obj_set_y( ui_date_cfg, 60 );
 lv_obj_set_align( ui_date_cfg, LV_ALIGN_LEFT_MID );
 lv_textarea_set_max_length(ui_date_cfg,12);
-lv_textarea_set_placeholder_text(ui_date_cfg,"01/01/2023");
+lv_textarea_set_placeholder_text(ui_date_cfg,"01/01/2026");
 lv_textarea_set_one_line(ui_date_cfg,true);
 lv_obj_set_scrollbar_mode(ui_date_cfg, LV_SCROLLBAR_MODE_OFF);
 lv_obj_set_style_text_align(ui_date_cfg, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN| LV_STATE_DEFAULT);
