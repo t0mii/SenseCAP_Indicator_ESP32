@@ -1523,16 +1523,22 @@ void ui_screen_sensor_chart_screen_init()
 	lv_obj_set_style_border_color(ui_sensor_chart_day, lv_color_hex(0x101418), LV_PART_MAIN | LV_STATE_DEFAULT );
 
     lv_obj_refresh_ext_draw_size(ui_sensor_chart_day);
-    lv_chart_set_zoom_x(ui_sensor_chart_day, 800);
+    lv_chart_set_zoom_x(ui_sensor_chart_day, 1600);
 
 
     //lv_chart_set_axis_tick(ui_sensor_chart_day, LV_CHART_AXIS_PRIMARY_Y, 0, 0, 5, 1, true, 80);
-    lv_chart_set_axis_tick(ui_sensor_chart_day, LV_CHART_AXIS_PRIMARY_X, 0, 0, 12, 1, true, 50);
+    lv_chart_set_axis_tick(ui_sensor_chart_day, LV_CHART_AXIS_PRIMARY_X, 0, 0, 24, 1, true, 50);
     //lv_chart_set_range(ui_sensor_chart_day, LV_CHART_AXIS_PRIMARY_X, 0, 200);
     lv_chart_set_range(ui_sensor_chart_day, LV_CHART_AXIS_PRIMARY_Y, -200, 600); //modify
 
-    lv_chart_set_div_line_count(ui_sensor_chart_day, 0, 12);
-    lv_chart_set_point_count(ui_sensor_chart_day, 48);
+    lv_chart_set_div_line_count(ui_sensor_chart_day, 5, 24);
+lv_obj_set_style_line_color(ui_sensor_chart_day, lv_color_hex(0x2A2A2A), LV_PART_MAIN);
+lv_obj_set_style_line_opa(ui_sensor_chart_day, LV_OPA_50, LV_PART_MAIN);
+lv_obj_set_style_size(ui_sensor_chart_day, 4, LV_PART_INDICATOR);
+lv_obj_set_style_bg_color(ui_sensor_chart_day, lv_color_white(), LV_PART_INDICATOR);
+lv_obj_set_style_bg_opa(ui_sensor_chart_day, LV_OPA_COVER, LV_PART_INDICATOR);
+lv_obj_set_style_line_width(ui_sensor_chart_day, 3, LV_PART_ITEMS);
+    lv_chart_set_point_count(ui_sensor_chart_day, 96);
 
 
     lv_obj_set_style_border_side(ui_sensor_chart_day, LV_BORDER_SIDE_RIGHT | LV_BORDER_SIDE_BOTTOM, 0);
@@ -1559,7 +1565,13 @@ void ui_screen_sensor_chart_screen_init()
     //lv_chart_set_range(ui_sensor_chart_week, LV_CHART_AXIS_PRIMARY_X, 0, 200);
     lv_chart_set_range(ui_sensor_chart_week, LV_CHART_AXIS_PRIMARY_Y, -200, 600);
 
-    lv_chart_set_div_line_count(ui_sensor_chart_week, 0, 7);
+    lv_chart_set_div_line_count(ui_sensor_chart_week, 5, 7);
+lv_obj_set_style_line_color(ui_sensor_chart_week, lv_color_hex(0x2A2A2A), LV_PART_MAIN);
+lv_obj_set_style_line_opa(ui_sensor_chart_week, LV_OPA_50, LV_PART_MAIN);
+lv_obj_set_style_size(ui_sensor_chart_week, 6, LV_PART_INDICATOR);
+lv_obj_set_style_bg_color(ui_sensor_chart_week, lv_color_white(), LV_PART_INDICATOR);
+lv_obj_set_style_bg_opa(ui_sensor_chart_week, LV_OPA_COVER, LV_PART_INDICATOR);
+lv_obj_set_style_line_width(ui_sensor_chart_week, 3, LV_PART_ITEMS);
     lv_chart_set_point_count(ui_sensor_chart_week, 7);
 
 

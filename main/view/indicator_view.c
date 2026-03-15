@@ -6,6 +6,7 @@
 #include "indicator_util.h"
 #include "indicator_sensor.h"
 #include "indicator_mariadb.h"
+#include "indicator_city.h"
 
 #include "esp_wifi.h"
 #include <time.h>
@@ -880,6 +881,8 @@ static void db_settings_click_cb(lv_event_t *e)
     }
 }
 
+static void loc_settings_click_cb(lv_event_t *e);
+
 static void extend_settings_screen(void)
 {
     /* The original settings screen has 3 buttons at x: -148, 0, 148
@@ -908,6 +911,179 @@ static void extend_settings_screen(void)
     lv_obj_add_event_cb(btn_database, db_settings_click_cb, LV_EVENT_CLICKED, NULL);
 
     ESP_LOGI(TAG, "Database settings button added to settings screen");
+
+    lv_obj_t *btn_location = lv_btn_create(ui_screen_setting);
+    lv_obj_set_size(btn_location, 140, 80);
+    lv_obj_align(btn_location, LV_ALIGN_BOTTOM_MID, 148, -40);
+    lv_obj_set_style_bg_color(btn_location, lv_color_hex(0xE07020), 0);
+    lv_obj_clear_flag(btn_location, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *loc_icon = lv_label_create(btn_location);
+    lv_label_set_text(loc_icon, LV_SYMBOL_GPS);
+    lv_obj_set_style_text_font(loc_icon, &lv_font_montserrat_24, 0);
+    lv_obj_align(loc_icon, LV_ALIGN_CENTER, 0, -10);
+
+    lv_obj_t *loc_title = lv_label_create(btn_location);
+    lv_label_set_text(loc_title, "Location");
+    lv_obj_set_style_text_font(loc_title, &lv_font_montserrat_14, 0);
+    lv_obj_align(loc_title, LV_ALIGN_CENTER, 0, 18);
+
+    lv_obj_add_event_cb(btn_location, loc_settings_click_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_align(btn_database, LV_ALIGN_BOTTOM_MID, -74, -40);
+    lv_obj_align(btn_location, LV_ALIGN_BOTTOM_MID, 74, -40);
+}
+
+static lv_obj_t *ui_screen_location = NULL;
+static lv_obj_t *ui_loc_name_ta = NULL;
+static lv_obj_t *ui_loc_status_lbl = NULL;
+
+static void loc_ta_focus_cb(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    lv_obj_t *ta = lv_event_get_target(e);
+
+    if (code == LV_EVENT_FOCUSED) {
+        lv_obj_t *kb = lv_keyboard_create(lv_scr_act());
+        lv_keyboard_set_textarea(kb, ta);
+        lv_obj_set_user_data(ta, kb);
+    } else if (code == LV_EVENT_DEFOCUSED || code == LV_EVENT_READY || code == LV_EVENT_CANCEL) {
+        lv_obj_t *kb = (lv_obj_t *)lv_obj_get_user_data(ta);
+        if (kb) {
+            lv_keyboard_set_textarea(kb, NULL);
+            lv_obj_del(kb);
+            lv_obj_set_user_data(ta, NULL);
+        }
+    }
+}
+
+static void loc_save_click_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+    const char *name = lv_textarea_get_text(ui_loc_name_ta);
+    indicator_city_set_custom_name(name);
+    ESP_LOGI("view", "Location saved: '%s'", name);
+
+    if (strlen(name) > 0) {
+        lv_label_set_text(ui_city, name);
+    }
+
+    if (ui_loc_status_lbl) {
+        char buf[48];
+        if (strlen(name) > 0) {
+            snprintf(buf, sizeof(buf), "Saved: %s", name);
+            lv_obj_set_style_text_color(ui_loc_status_lbl, lv_color_hex(0x00FF00), 0);
+        } else {
+            snprintf(buf, sizeof(buf), "Cleared - using auto-detect");
+            lv_obj_set_style_text_color(ui_loc_status_lbl, lv_color_hex(0x888888), 0);
+        }
+        lv_label_set_text(ui_loc_status_lbl, buf);
+    }
+}
+
+static void loc_clear_click_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+    lv_textarea_set_text(ui_loc_name_ta, "");
+    indicator_city_set_custom_name(NULL);
+    ESP_LOGI("view", "Location cleared, back to auto-detect");
+}
+
+static void loc_back_click_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
+        _ui_screen_change(ui_screen_setting, LV_SCR_LOAD_ANIM_OVER_RIGHT, 200, 0);
+    }
+}
+
+static void create_location_screen(void)
+{
+    ui_screen_location = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(ui_screen_location, lv_color_hex(0x1A1A1A), 0);
+    lv_obj_clear_flag(ui_screen_location, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *back_btn = lv_btn_create(ui_screen_location);
+    lv_obj_set_size(back_btn, 50, 50);
+    lv_obj_set_pos(back_btn, 10, 15);
+    lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x101418), 0);
+    lv_obj_set_style_bg_img_src(back_btn, &ui_img_back_png, 0);
+    lv_obj_add_event_cb(back_btn, loc_back_click_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *title = lv_label_create(ui_screen_location);
+    lv_label_set_text(title, "Location");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_20, 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 25);
+
+    lv_obj_t *desc = lv_label_create(ui_screen_location);
+    lv_label_set_text(desc, "Override the auto-detected city name.\nLeave empty to use auto-detect.");
+    lv_obj_set_style_text_font(desc, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(desc, lv_color_hex(0x999999), 0);
+    lv_obj_set_width(desc, 400);
+    lv_obj_align(desc, LV_ALIGN_TOP_MID, 0, 70);
+
+    lv_obj_t *name_lbl = lv_label_create(ui_screen_location);
+    lv_label_set_text(name_lbl, "Display Name");
+    lv_obj_set_style_text_font(name_lbl, &lv_font_montserrat_16, 0);
+    lv_obj_set_pos(name_lbl, 40, 130);
+
+    ui_loc_name_ta = lv_textarea_create(ui_screen_location);
+    lv_obj_set_size(ui_loc_name_ta, 400, 45);
+    lv_obj_set_pos(ui_loc_name_ta, 40, 160);
+    lv_textarea_set_placeholder_text(ui_loc_name_ta, "e.g. Pernitz");
+    lv_textarea_set_one_line(ui_loc_name_ta, true);
+    lv_textarea_set_max_length(ui_loc_name_ta, 24);
+    lv_obj_add_event_cb(ui_loc_name_ta, loc_ta_focus_cb, LV_EVENT_ALL, NULL);
+
+    char current[32] = {0};
+    indicator_city_get_custom_name(current, sizeof(current));
+    if (strlen(current) > 0) {
+        lv_textarea_set_text(ui_loc_name_ta, current);
+    }
+
+    lv_obj_t *save_btn = lv_btn_create(ui_screen_location);
+    lv_obj_set_size(save_btn, 160, 55);
+    lv_obj_align(save_btn, LV_ALIGN_BOTTOM_LEFT, 40, -30);
+    lv_obj_set_style_bg_color(save_btn, lv_color_hex(0x529D53), 0);
+    lv_obj_t *save_lbl = lv_label_create(save_btn);
+    lv_label_set_text(save_lbl, LV_SYMBOL_SAVE "  Save");
+    lv_obj_set_style_text_font(save_lbl, &lv_font_montserrat_18, 0);
+    lv_obj_center(save_lbl);
+    lv_obj_add_event_cb(save_btn, loc_save_click_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *clear_btn = lv_btn_create(ui_screen_location);
+    lv_obj_set_size(clear_btn, 160, 55);
+    lv_obj_align(clear_btn, LV_ALIGN_BOTTOM_RIGHT, -40, -30);
+    lv_obj_set_style_bg_color(clear_btn, lv_color_hex(0x666666), 0);
+    lv_obj_t *clear_lbl = lv_label_create(clear_btn);
+    lv_label_set_text(clear_lbl, LV_SYMBOL_TRASH "  Clear");
+    lv_obj_set_style_text_font(clear_lbl, &lv_font_montserrat_18, 0);
+    lv_obj_center(clear_lbl);
+    lv_obj_add_event_cb(clear_btn, loc_clear_click_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *status_bar = lv_obj_create(ui_screen_location);
+    lv_obj_set_size(status_bar, 400, 40);
+    lv_obj_align(status_bar, LV_ALIGN_BOTTOM_MID, 0, -100);
+    lv_obj_set_style_bg_color(status_bar, lv_color_hex(0x202020), 0);
+    lv_obj_set_style_border_width(status_bar, 0, 0);
+    lv_obj_set_style_pad_all(status_bar, 8, 0);
+
+    ui_loc_status_lbl = lv_label_create(status_bar);
+    lv_label_set_text(ui_loc_status_lbl, "");
+    lv_obj_set_style_text_font(ui_loc_status_lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(ui_loc_status_lbl, lv_color_hex(0x888888), 0);
+    lv_obj_center(ui_loc_status_lbl);
+
+    ESP_LOGI("view", "Location settings screen created");
+}
+
+static void loc_settings_click_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
+        if (ui_screen_location == NULL) {
+            create_location_screen();
+        }
+        _ui_screen_change(ui_screen_location, LV_SCR_LOAD_ANIM_OVER_LEFT, 200, 0);
+    }
 }
 
 /*****************************************************************/
@@ -923,7 +1099,8 @@ typedef struct sensor_chart_display
     struct view_data_sensor_history_data *p_info;
 } sensor_chart_display_t;
 
-static char date_hour[48][6] = { };
+static char date_hour[96][6] = { };
+static lv_obj_t *ui_sensor_stats_label = NULL;
 static char date_day[7][6] = { };
 static uint16_t sensor_data_resolution = 0;
 static uint16_t sensor_data_multiple = 1;
@@ -997,8 +1174,9 @@ static void event_chart_day_cb(lv_event_t * e)
         lv_obj_draw_part_dsc_t * dsc = lv_event_get_param(e);
         /*Set the markers' text*/
         if(dsc->part == LV_PART_TICKS && dsc->id == LV_CHART_AXIS_PRIMARY_X) {
-            int idx = dsc->value * 4;
-            if(idx >= 48) idx = 47;
+            int idx = (dsc->value * 95) / 23;
+            if(idx < 0) idx = 0;
+            if(idx > 95) idx = 95;
             lv_snprintf(dsc->text, dsc->text_length, "%s", (char *)&date_hour[idx][0]);
         } else if(dsc->part == LV_PART_ITEMS) {
 
@@ -1119,15 +1297,35 @@ void sensor_chart_update(sensor_chart_display_t *p_display)
 	lv_chart_set_series_color(ui_sensor_chart_week, ui_sensor_chart_week_series_low, p_display->color);
 	lv_chart_set_series_color(ui_sensor_chart_week, ui_sensor_chart_week_series_hight, p_display->color);
 
-    for(i = 0; i < 48; i++) {
+    float avg_sum = 0;
+    int avg_cnt = 0;
+    for(i = 0; i < 96; i++) {
     	if( p_info->data_day[i].valid ) {
     		lv_chart_set_value_by_id(ui_sensor_chart_day, ui_sensor_chart_day_series, i,  sensor_data_multiple * p_info->data_day[i].data );
+    		avg_sum += p_info->data_day[i].data;
+    		avg_cnt++;
     	} else {
     		lv_chart_set_value_by_id(ui_sensor_chart_day, ui_sensor_chart_day_series, i, LV_CHART_POINT_NONE);
     	}
     	struct tm timeinfo = { 0 };
     	localtime_r(&p_info->data_day[i].timestamp, &timeinfo);
     	lv_snprintf((char*)&date_hour[i][0], 6, "%02d:%02d", timeinfo.tm_hour, timeinfo.tm_min);
+    }
+
+    float avg_val = avg_cnt > 0 ? avg_sum / avg_cnt : 0;
+    if (ui_sensor_stats_label == NULL) {
+        ui_sensor_stats_label = lv_label_create(ui_screen_sensor_chart);
+        lv_obj_set_style_text_font(ui_sensor_stats_label, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_color(ui_sensor_stats_label, lv_color_hex(0xAAAAAA), 0);
+        lv_obj_align(ui_sensor_stats_label, LV_ALIGN_TOP_MID, 0, 75);
+    }
+    if (avg_cnt > 0) {
+        char stats_buf[64];
+        snprintf(stats_buf, sizeof(stats_buf), "Min: %.1f   Max: %.1f   Avg: %.1f",
+                 p_info->day_min, p_info->day_max, avg_val);
+        lv_label_set_text(ui_sensor_stats_label, stats_buf);
+    } else {
+        lv_label_set_text(ui_sensor_stats_label, "Min: --   Max: --   Avg: --");
     }
 
     for(i = 0; i < 7; i++) {
@@ -1145,11 +1343,6 @@ void sensor_chart_update(sensor_chart_display_t *p_display)
 
     	lv_snprintf((char*)&date_day[i][0], 6, "%02d/%02d",timeinfo.tm_mon + 1, timeinfo.tm_mday);
     }
-
-    //change type color
-   lv_disp_t *dispp = lv_disp_get_default();
-   lv_theme_t *theme = lv_theme_default_init(dispp, p_display->color, lv_palette_main(LV_PALETTE_RED), true, LV_FONT_DEFAULT);
-   lv_disp_set_theme(dispp, theme);
 
     lv_chart_refresh(ui_sensor_chart_day);
     lv_chart_refresh(ui_sensor_chart_week);
@@ -1173,9 +1366,9 @@ void sensor_chart_event_init(void)
     float min=90;
     float max=10;
 
-    for(i = 0; i < 48; i++) { 
+    for(i = 0; i < 96; i++) { 
         default_sensor_info.data_day[i].data = (float)lv_rand(10, 90);
-        default_sensor_info.data_day[i].timestamp = time1 + i * 1800;
+        default_sensor_info.data_day[i].timestamp = time1 + i * 900;
         default_sensor_info.data_day[i].valid = true;
         
         if( min > default_sensor_info.data_day[i].data) {
@@ -1207,17 +1400,6 @@ void sensor_chart_event_init(void)
     }
     default_sensor_info.week_max = max;
     default_sensor_info.week_min = min;
-
-    sensor_chart_display_t default_chart = {
-        .color = lv_palette_main(LV_PALETTE_GREEN),
-        .p_info = &default_sensor_info,
-    };
-    strcpy(default_chart.name, "TEST");
-    strcpy(default_chart.units, "%%");
-
-    
-
-    sensor_chart_update( &default_chart);
 
     lv_obj_add_event_cb(ui_sensor_chart_day, event_chart_day_cb, LV_EVENT_ALL, NULL);
     lv_obj_add_event_cb(ui_sensor_chart_week, event_chart_week_cb, LV_EVENT_ALL, NULL);
@@ -2082,6 +2264,13 @@ static void __view_event_handler(void* handler_args, esp_event_base_t base, int3
 int indicator_view_init(void)
 {
     ui_init();
+
+    lv_obj_t *branding = lv_label_create(ui_background);
+    lv_label_set_text(branding, "supersauna.club");
+    lv_obj_set_style_text_font(branding, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(branding, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_align(branding, LV_ALIGN_BOTTOM_MID);
+    lv_obj_set_y(branding, -10);
 
     wifi_list_event_init();
     sensor_chart_event_init();
