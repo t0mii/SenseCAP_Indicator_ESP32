@@ -10,7 +10,7 @@
 #define SENSOR_HISTORY_DATA_DEBUG  0
 #define SENSOR_COMM_DEBUG    1
 
-#define HISTORY_INTERVAL_SECONDS  1800
+#define HISTORY_INTERVAL_SECONDS  900
 
 /* Validate float value - reject NaN and Inf */
 #define FLOAT_IS_VALID(f) (isfinite(f))
@@ -73,7 +73,7 @@ struct sensor_present_data
 };
 struct sensor_history_data
 {
-    struct sensor_data_average data_day[48];
+    struct sensor_data_average data_day[96];
     struct sensor_data_minmax data_week[7];
 };
 
@@ -128,6 +128,7 @@ static SemaphoreHandle_t       __g_data_mutex;
 
 static struct indicator_sensor_history_data  __g_sensor_history_data;
 static struct indicator_sensor_present_data  __g_sensor_present_data;
+static struct view_data_sensor_history_data  __g_history_event_buf;
 
 static esp_timer_handle_t   sensor_history_data_timer_handle;
 
@@ -156,14 +157,14 @@ static void __sensor_history_data_get( struct sensor_history_data  *p_history, s
     struct sensor_data_average *p_data_day = &p_history->data_day[0];
     struct sensor_data_minmax  *p_data_week = &p_history->data_week[0];
 
-    memcpy(p_data->data_day, (uint8_t *)p_data_day, sizeof( struct sensor_data_average) * 48);
+    memcpy(p_data->data_day, (uint8_t *)p_data_day, sizeof( struct sensor_data_average) * 96);
     memcpy(p_data->data_week, (uint8_t *)p_data_week, sizeof( struct sensor_data_minmax) * 7);
     
 
     float min=10000;
     float max=-10000;
 
-    for(int i =0; i < 48; i++ ) {
+    for(int i =0; i < 96; i++ ) {
         struct sensor_data_average *p_item = p_data_day + i;
         if( p_item->valid ) {
             if( min > p_item->data ){
@@ -222,10 +223,10 @@ static void __sensor_history_data_day_check(struct sensor_data_average p_data_da
     int history_interval = 0;
     int cur_interval = 0;
 
-    history_interval = p_data_day[47].timestamp / HISTORY_INTERVAL_SECONDS;
+    history_interval = p_data_day[95].timestamp / HISTORY_INTERVAL_SECONDS;
     cur_interval = now / HISTORY_INTERVAL_SECONDS;
 
-    for( int i =0;  i < 48; i++) {
+    for( int i =0;  i < 96; i++) {
         if( p_data_day[i].valid) {
             ESP_LOGI(TAG, "%s index:%d, data:%.0f, time:%d", p_sensor_name, i, p_data_day[i].data, p_data_day[i].timestamp);
         }
@@ -233,16 +234,16 @@ static void __sensor_history_data_day_check(struct sensor_data_average p_data_da
 
     if( history_interval  >  cur_interval) {
         ESP_LOGI(TAG, "%s History day data pull ahead, clear data", p_sensor_name);
-        memset(p_data_day, 0, sizeof(struct sensor_data_average)*48);
+        memset(p_data_day, 0, sizeof(struct sensor_data_average)*96);
         return;
     }
 
-    for(int i =0; i < 47; i++ ) {
+    for(int i =0; i < 95; i++ ) {
        int interval1 = p_data_day[i].timestamp / HISTORY_INTERVAL_SECONDS;
        int interval2 = p_data_day[i+1].timestamp / HISTORY_INTERVAL_SECONDS;
        if( (interval2 - interval1) < 1 || (interval2 - interval1) > 3) {
             ESP_LOGI(TAG, "%s History day data error (gap=%d), clear data", p_sensor_name, interval2-interval1);
-            memset(p_data_day, 0, sizeof(struct sensor_data_average)*48);
+            memset(p_data_day, 0, sizeof(struct sensor_data_average)*96);
             return;
        }
     }
@@ -252,24 +253,24 @@ static void __sensor_history_data_day_check(struct sensor_data_average p_data_da
         return;
     }
 
-    if( history_interval < ( cur_interval - 47) ) {
+    if( history_interval < ( cur_interval - 95) ) {
         ESP_LOGI(TAG, "%s History day data expired, clear data!", p_sensor_name);
-        memset(p_data_day, 0, sizeof(struct sensor_data_average)*48);
+        memset(p_data_day, 0, sizeof(struct sensor_data_average)*96);
     } else {
 
-        int overlap_cnt = history_interval - ( cur_interval - 47) + 1;
+        int overlap_cnt = history_interval - ( cur_interval - 95) + 1;
 
         ESP_LOGI(TAG, "%s History day data  %d overlap !", p_sensor_name, overlap_cnt);
 
-        for(int i =0; i < 48; i++ ) {
+        for(int i =0; i < 96; i++ ) {
             if( i < overlap_cnt) {
-                p_data_day[i].data = p_data_day[48-overlap_cnt+i].data;
-                p_data_day[i].valid = p_data_day[48-overlap_cnt+i].valid;
-                p_data_day[i].timestamp = p_data_day[48-overlap_cnt+i].timestamp;
+                p_data_day[i].data = p_data_day[96-overlap_cnt+i].data;
+                p_data_day[i].valid = p_data_day[96-overlap_cnt+i].valid;
+                p_data_day[i].timestamp = p_data_day[96-overlap_cnt+i].timestamp;
             } else {
                 p_data_day[i].data = 0;
                 p_data_day[i].valid = false;
-                p_data_day[i].timestamp = now - (47 -i) * HISTORY_INTERVAL_SECONDS;
+                p_data_day[i].timestamp = now - (95 -i) * HISTORY_INTERVAL_SECONDS;
             }
         }
     }
@@ -347,38 +348,38 @@ static void __sensor_history_data_day_insert(struct sensor_data_average p_data_d
     struct tm timeinfo;
 
     localtime_r( &now, &timeinfo);
-    cur_interval = (timeinfo.tm_hour * 60 + timeinfo.tm_min) / 30;
+    cur_interval = (timeinfo.tm_hour * 60 + timeinfo.tm_min) / 15;
 
-    localtime_r( &(p_data_day[47].timestamp), &timeinfo);
-    history_interval = (timeinfo.tm_hour * 60 + timeinfo.tm_min) / 30;
+    localtime_r( &(p_data_day[95].timestamp), &timeinfo);
+    history_interval = (timeinfo.tm_hour * 60 + timeinfo.tm_min) / 15;
 
     if( cur_interval == history_interval) {
         return;
     }
 
-    for( int i =0;  i < 47; i++) {
+    for( int i =0;  i < 95; i++) {
         p_data_day[i].data = p_data_day[i+1].data;
         p_data_day[i].valid = p_data_day[i+1].valid;
         p_data_day[i].timestamp = p_data_day[i+1].timestamp;
 
         if( !p_data_day[i].valid) {
-            p_data_day[i].timestamp = now - (47 -i) * HISTORY_INTERVAL_SECONDS;
+            p_data_day[i].timestamp = now - (95 -i) * HISTORY_INTERVAL_SECONDS;
         }
     }
     if( p_cur->per_hour_cnt >=1) {
-        p_data_day[47].valid = true;
-        p_data_day[47].data = p_cur->average;
+        p_data_day[95].valid = true;
+        p_data_day[95].data = p_cur->average;
 
         p_cur->per_hour_cnt = 0;
         p_cur->sum = 0.0;
 
     }  else {
-        p_data_day[47].valid = false;
+        p_data_day[95].valid = false;
     }
-    p_data_day[47].timestamp = now;
+    p_data_day[95].timestamp = now;
 
 #if SENSOR_HISTORY_DATA_DEBUG
-    for( int i =0;  i < 48; i++) {
+    for( int i =0;  i < 96; i++) {
         if( p_data_day[i].valid) {
             ESP_LOGI(TAG, "index:%d, data:%.0f, time:%d", i, p_data_day[i].data, p_data_day[i].timestamp);
         }
@@ -564,7 +565,7 @@ static void __sensor_history_data_update_check(void)
     char strftime_buf[64];
     strftime(strftime_buf, sizeof(strftime_buf), "%c", &timeinfo);
 
-    int cur_interval = (timeinfo.tm_hour * 60 + timeinfo.tm_min) / 30;
+    int cur_interval = (timeinfo.tm_hour * 60 + timeinfo.tm_min) / 15;
     int cur_day  = timeinfo.tm_mday;
 
     ESP_LOGI(TAG, "__sensor_history_data_update_check: %s (interval=%d)", strftime_buf, cur_interval);
@@ -583,7 +584,7 @@ static void __sensor_history_data_update_check(void)
             last_timestamp1 = ((now - HISTORY_INTERVAL_SECONDS) / HISTORY_INTERVAL_SECONDS) * HISTORY_INTERVAL_SECONDS;
         }
 
-        ESP_LOGI(TAG, "Storing sensor data (30-min interval)");
+        ESP_LOGI(TAG, "Storing sensor data (15-min interval)");
         __sensor_history_data_day_update(last_timestamp1);
 
         last_timestamp1 = (now / HISTORY_INTERVAL_SECONDS) * HISTORY_INTERVAL_SECONDS;
@@ -744,12 +745,10 @@ static int __data_parse_handle(uint8_t *p_data, ssize_t len)
             if( len < (sizeof(data.vaule) +1)) {
                 break;
             }
-
             data.sensor_type = SENSOR_DATA_CO2;
             memcpy(&data.vaule, &p_data[1], sizeof(data.vaule));
             __sensor_present_data_update(&__g_sensor_present_data.co2, data.vaule);
             __g_current_sensor_data.co2 = data.vaule;
-
             esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA, \
                            &data, sizeof(struct view_data_sensor_data ), portMAX_DELAY);
             break;
@@ -760,12 +759,10 @@ static int __data_parse_handle(uint8_t *p_data, ssize_t len)
             if( len < (sizeof(data.vaule) +1)) {
                 break;
             }
-
             data.sensor_type = SENSOR_DATA_TEMP;
             memcpy(&data.vaule, &p_data[1], sizeof(data.vaule));
             __sensor_present_data_update(&__g_sensor_present_data.temp, data.vaule);
             __g_current_sensor_data.temp_internal = data.vaule;
-
             esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA, \
                            &data, sizeof(struct view_data_sensor_data ), portMAX_DELAY);
             break;
@@ -776,12 +773,10 @@ static int __data_parse_handle(uint8_t *p_data, ssize_t len)
             if( len < (sizeof(data.vaule) +1)) {
                 break;
             }
-
             data.sensor_type = SENSOR_DATA_HUMIDITY;
             memcpy(&data.vaule, &p_data[1], sizeof(data.vaule));
             __sensor_present_data_update(&__g_sensor_present_data.humidity, data.vaule);
             __g_current_sensor_data.humidity_internal = data.vaule;
-
             esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA, \
                            &data, sizeof(struct view_data_sensor_data ), portMAX_DELAY);
             break;
@@ -792,12 +787,10 @@ static int __data_parse_handle(uint8_t *p_data, ssize_t len)
             if( len < (sizeof(data.vaule) +1)) {
                 break;
             }
-
             data.sensor_type = SENSOR_DATA_TVOC;
             memcpy(&data.vaule, &p_data[1], sizeof(data.vaule));
             __sensor_present_data_update(&__g_sensor_present_data.tvoc, data.vaule);
             __g_current_sensor_data.tvoc = data.vaule;
-
             esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA, \
                            &data, sizeof(struct view_data_sensor_data ), portMAX_DELAY);
             break;
@@ -1072,122 +1065,109 @@ static void __view_event_handler(void* handler_args, esp_event_base_t base, int3
     {
         case VIEW_EVENT_SENSOR_TEMP_HISTORY: {
             ESP_LOGI(TAG, "event: VIEW_EVENT_SENSOR_TEMP_HISTORY");
-            struct view_data_sensor_history_data data;
-            __sensor_history_data_get( &__g_sensor_history_data.temp,  &data);
-            data.sensor_type = SENSOR_DATA_TEMP;
-            data.resolution  = 1;
-            esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA_HISTORY, &data, sizeof(struct view_data_sensor_history_data ), portMAX_DELAY);
+            __sensor_history_data_get( &__g_sensor_history_data.temp,  &__g_history_event_buf);
+            __g_history_event_buf.sensor_type = SENSOR_DATA_TEMP;
+            __g_history_event_buf.resolution  = 1;
+            esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA_HISTORY, &__g_history_event_buf, sizeof(struct view_data_sensor_history_data ), portMAX_DELAY);
             break;
         }
 
         case VIEW_EVENT_SENSOR_HUMIDITY_HISTORY: {
             ESP_LOGI(TAG, "event: VIEW_EVENT_SENSOR_HUMIDITY_HISTORY");
-            struct view_data_sensor_history_data data;
-            __sensor_history_data_get( &__g_sensor_history_data.humidity,  &data);
-            data.sensor_type = SENSOR_DATA_HUMIDITY;
-            data.resolution  = 0;
-            esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA_HISTORY, &data, sizeof(struct view_data_sensor_history_data ), portMAX_DELAY);
+            __sensor_history_data_get( &__g_sensor_history_data.humidity,  &__g_history_event_buf);
+            __g_history_event_buf.sensor_type = SENSOR_DATA_HUMIDITY;
+            __g_history_event_buf.resolution  = 0;
+            esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA_HISTORY, &__g_history_event_buf, sizeof(struct view_data_sensor_history_data ), portMAX_DELAY);
             break;
         }
         case VIEW_EVENT_SENSOR_CO2_HISTORY: {
             ESP_LOGI(TAG, "event: VIEW_EVENT_SENSOR_CO2_HISTORY");
-            struct view_data_sensor_history_data data;
-            __sensor_history_data_get( &__g_sensor_history_data.co2,  &data);
-            data.sensor_type = SENSOR_DATA_CO2;
-            data.resolution  = 0;
-            esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA_HISTORY, &data, sizeof(struct view_data_sensor_history_data ), portMAX_DELAY);
+            __sensor_history_data_get( &__g_sensor_history_data.co2,  &__g_history_event_buf);
+            __g_history_event_buf.sensor_type = SENSOR_DATA_CO2;
+            __g_history_event_buf.resolution  = 0;
+            esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA_HISTORY, &__g_history_event_buf, sizeof(struct view_data_sensor_history_data ), portMAX_DELAY);
             break;
         }
         case VIEW_EVENT_SENSOR_TVOC_HISTORY: {
             ESP_LOGI(TAG, "event: VIEW_EVENT_SENSOR_TVOC_HISTORY");
-            struct view_data_sensor_history_data data;
-            __sensor_history_data_get( &__g_sensor_history_data.tvoc,  &data);
-            data.sensor_type = SENSOR_DATA_TVOC;
-            data.resolution  = 0;
-            esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA_HISTORY, &data, sizeof(struct view_data_sensor_history_data ), portMAX_DELAY);
+            __sensor_history_data_get( &__g_sensor_history_data.tvoc,  &__g_history_event_buf);
+            __g_history_event_buf.sensor_type = SENSOR_DATA_TVOC;
+            __g_history_event_buf.resolution  = 0;
+            esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA_HISTORY, &__g_history_event_buf, sizeof(struct view_data_sensor_history_data ), portMAX_DELAY);
             break;
         }
 
         /* Extended sensor history events */
         case VIEW_EVENT_SENSOR_TEMP_EXT_HISTORY: {
             ESP_LOGI(TAG, "event: VIEW_EVENT_SENSOR_TEMP_EXT_HISTORY");
-            struct view_data_sensor_history_data data;
-            __sensor_history_data_get( &__g_sensor_history_data.temp_ext,  &data);
-            data.sensor_type = SENSOR_DATA_TEMP_EXT;
-            data.resolution  = 1;
-            esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA_HISTORY, &data, sizeof(struct view_data_sensor_history_data ), portMAX_DELAY);
+            __sensor_history_data_get( &__g_sensor_history_data.temp_ext,  &__g_history_event_buf);
+            __g_history_event_buf.sensor_type = SENSOR_DATA_TEMP_EXT;
+            __g_history_event_buf.resolution  = 1;
+            esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA_HISTORY, &__g_history_event_buf, sizeof(struct view_data_sensor_history_data ), portMAX_DELAY);
             break;
         }
         case VIEW_EVENT_SENSOR_HUMIDITY_EXT_HISTORY: {
             ESP_LOGI(TAG, "event: VIEW_EVENT_SENSOR_HUMIDITY_EXT_HISTORY");
-            struct view_data_sensor_history_data data;
-            __sensor_history_data_get( &__g_sensor_history_data.humidity_ext,  &data);
-            data.sensor_type = SENSOR_DATA_HUMIDITY_EXT;
-            data.resolution  = 0;
-            esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA_HISTORY, &data, sizeof(struct view_data_sensor_history_data ), portMAX_DELAY);
+            __sensor_history_data_get( &__g_sensor_history_data.humidity_ext,  &__g_history_event_buf);
+            __g_history_event_buf.sensor_type = SENSOR_DATA_HUMIDITY_EXT;
+            __g_history_event_buf.resolution  = 0;
+            esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA_HISTORY, &__g_history_event_buf, sizeof(struct view_data_sensor_history_data ), portMAX_DELAY);
             break;
         }
         case VIEW_EVENT_SENSOR_PM1_0_HISTORY: {
             ESP_LOGI(TAG, "event: VIEW_EVENT_SENSOR_PM1_0_HISTORY");
-            struct view_data_sensor_history_data data;
-            __sensor_history_data_get( &__g_sensor_history_data.pm1_0,  &data);
-            data.sensor_type = SENSOR_DATA_PM1_0;
-            data.resolution  = 1;
-            esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA_HISTORY, &data, sizeof(struct view_data_sensor_history_data ), portMAX_DELAY);
+            __sensor_history_data_get( &__g_sensor_history_data.pm1_0,  &__g_history_event_buf);
+            __g_history_event_buf.sensor_type = SENSOR_DATA_PM1_0;
+            __g_history_event_buf.resolution  = 1;
+            esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA_HISTORY, &__g_history_event_buf, sizeof(struct view_data_sensor_history_data ), portMAX_DELAY);
             break;
         }
         case VIEW_EVENT_SENSOR_PM2_5_HISTORY: {
             ESP_LOGI(TAG, "event: VIEW_EVENT_SENSOR_PM2_5_HISTORY");
-            struct view_data_sensor_history_data data;
-            __sensor_history_data_get( &__g_sensor_history_data.pm2_5,  &data);
-            data.sensor_type = SENSOR_DATA_PM2_5;
-            data.resolution  = 1;
-            esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA_HISTORY, &data, sizeof(struct view_data_sensor_history_data ), portMAX_DELAY);
+            __sensor_history_data_get( &__g_sensor_history_data.pm2_5,  &__g_history_event_buf);
+            __g_history_event_buf.sensor_type = SENSOR_DATA_PM2_5;
+            __g_history_event_buf.resolution  = 1;
+            esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA_HISTORY, &__g_history_event_buf, sizeof(struct view_data_sensor_history_data ), portMAX_DELAY);
             break;
         }
         case VIEW_EVENT_SENSOR_PM10_HISTORY: {
             ESP_LOGI(TAG, "event: VIEW_EVENT_SENSOR_PM10_HISTORY");
-            struct view_data_sensor_history_data data;
-            __sensor_history_data_get( &__g_sensor_history_data.pm10,  &data);
-            data.sensor_type = SENSOR_DATA_PM10;
-            data.resolution  = 1;
-            esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA_HISTORY, &data, sizeof(struct view_data_sensor_history_data ), portMAX_DELAY);
+            __sensor_history_data_get( &__g_sensor_history_data.pm10,  &__g_history_event_buf);
+            __g_history_event_buf.sensor_type = SENSOR_DATA_PM10;
+            __g_history_event_buf.resolution  = 1;
+            esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA_HISTORY, &__g_history_event_buf, sizeof(struct view_data_sensor_history_data ), portMAX_DELAY);
             break;
         }
         case VIEW_EVENT_SENSOR_NO2_HISTORY: {
             ESP_LOGI(TAG, "event: VIEW_EVENT_SENSOR_NO2_HISTORY");
-            struct view_data_sensor_history_data data;
-            __sensor_history_data_get( &__g_sensor_history_data.no2,  &data);
-            data.sensor_type = SENSOR_DATA_NO2;
-            data.resolution  = 2;
-            esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA_HISTORY, &data, sizeof(struct view_data_sensor_history_data ), portMAX_DELAY);
+            __sensor_history_data_get( &__g_sensor_history_data.no2,  &__g_history_event_buf);
+            __g_history_event_buf.sensor_type = SENSOR_DATA_NO2;
+            __g_history_event_buf.resolution  = 2;
+            esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA_HISTORY, &__g_history_event_buf, sizeof(struct view_data_sensor_history_data ), portMAX_DELAY);
             break;
         }
         case VIEW_EVENT_SENSOR_C2H5OH_HISTORY: {
             ESP_LOGI(TAG, "event: VIEW_EVENT_SENSOR_C2H5OH_HISTORY");
-            struct view_data_sensor_history_data data;
-            __sensor_history_data_get( &__g_sensor_history_data.c2h5oh,  &data);
-            data.sensor_type = SENSOR_DATA_C2H5OH;
-            data.resolution  = 2;
-            esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA_HISTORY, &data, sizeof(struct view_data_sensor_history_data ), portMAX_DELAY);
+            __sensor_history_data_get( &__g_sensor_history_data.c2h5oh,  &__g_history_event_buf);
+            __g_history_event_buf.sensor_type = SENSOR_DATA_C2H5OH;
+            __g_history_event_buf.resolution  = 2;
+            esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA_HISTORY, &__g_history_event_buf, sizeof(struct view_data_sensor_history_data ), portMAX_DELAY);
             break;
         }
         case VIEW_EVENT_SENSOR_VOC_HISTORY: {
             ESP_LOGI(TAG, "event: VIEW_EVENT_SENSOR_VOC_HISTORY");
-            struct view_data_sensor_history_data data;
-            __sensor_history_data_get( &__g_sensor_history_data.voc,  &data);
-            data.sensor_type = SENSOR_DATA_VOC;
-            data.resolution  = 2;
-            esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA_HISTORY, &data, sizeof(struct view_data_sensor_history_data ), portMAX_DELAY);
+            __sensor_history_data_get( &__g_sensor_history_data.voc,  &__g_history_event_buf);
+            __g_history_event_buf.sensor_type = SENSOR_DATA_VOC;
+            __g_history_event_buf.resolution  = 2;
+            esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA_HISTORY, &__g_history_event_buf, sizeof(struct view_data_sensor_history_data ), portMAX_DELAY);
             break;
         }
         case VIEW_EVENT_SENSOR_CO_HISTORY: {
             ESP_LOGI(TAG, "event: VIEW_EVENT_SENSOR_CO_HISTORY");
-            struct view_data_sensor_history_data data;
-            __sensor_history_data_get( &__g_sensor_history_data.co,  &data);
-            data.sensor_type = SENSOR_DATA_CO;
-            data.resolution  = 2;
-            esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA_HISTORY, &data, sizeof(struct view_data_sensor_history_data ), portMAX_DELAY);
+            __sensor_history_data_get( &__g_sensor_history_data.co,  &__g_history_event_buf);
+            __g_history_event_buf.sensor_type = SENSOR_DATA_CO;
+            __g_history_event_buf.resolution  = 2;
+            esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA_HISTORY, &__g_history_event_buf, sizeof(struct view_data_sensor_history_data ), portMAX_DELAY);
             break;
         }
 
@@ -1200,9 +1180,8 @@ static void __view_event_handler(void* handler_args, esp_event_base_t base, int3
 #if 0
         case VIEW_EVENT_SENSOR_TEMP_HISTORY: {
             ESP_LOGI(TAG, "event: VIEW_EVENT_SENSOR_TEMP_HISTORY");
-            struct view_data_sensor_history_data data;
-            data.sensor_type = SENSOR_DATA_TEMP;
-            data.resolution = 1;
+            __g_history_event_buf.sensor_type = SENSOR_DATA_TEMP;
+            __g_history_event_buf.resolution = 1;
 
             //test
             float min=100;
@@ -1247,14 +1226,13 @@ static void __view_event_handler(void* handler_args, esp_event_base_t base, int3
             data.week_max = max;
             data.week_min = min;
 
-            esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA_HISTORY, &data, sizeof(struct view_data_sensor_history_data ), portMAX_DELAY);
+            esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA_HISTORY, &__g_history_event_buf, sizeof(struct view_data_sensor_history_data ), portMAX_DELAY);
             break;
         }
         case VIEW_EVENT_SENSOR_HUMIDITY_HISTORY: {
             ESP_LOGI(TAG, "event: VIEW_EVENT_SENSOR_HUMIDITY_HISTORY");
-            struct view_data_sensor_history_data data;
-            data.sensor_type = SENSOR_DATA_HUMIDITY;
-            data.resolution = 0;
+            __g_history_event_buf.sensor_type = SENSOR_DATA_HUMIDITY;
+            __g_history_event_buf.resolution = 0;
 
             //test
             float min=100;
@@ -1295,14 +1273,13 @@ static void __view_event_handler(void* handler_args, esp_event_base_t base, int3
             }
             data.week_max = max;
             data.week_min = min;
-            esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA_HISTORY, &data, sizeof(struct view_data_sensor_history_data ), portMAX_DELAY);
+            esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA_HISTORY, &__g_history_event_buf, sizeof(struct view_data_sensor_history_data ), portMAX_DELAY);
             break;
         }
         case VIEW_EVENT_SENSOR_TVOC_HISTORY: {
             ESP_LOGI(TAG, "event: VIEW_EVENT_SENSOR_TVOC_HISTORY");
-            struct view_data_sensor_history_data data;
-            data.sensor_type = SENSOR_DATA_TVOC;
-            data.resolution = 0;
+            __g_history_event_buf.sensor_type = SENSOR_DATA_TVOC;
+            __g_history_event_buf.resolution = 0;
 
             //test
             float min=120;
@@ -1343,14 +1320,13 @@ static void __view_event_handler(void* handler_args, esp_event_base_t base, int3
             }
             data.week_max = max;
             data.week_min = min;
-            esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA_HISTORY, &data, sizeof(struct view_data_sensor_history_data ), portMAX_DELAY);
+            esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA_HISTORY, &__g_history_event_buf, sizeof(struct view_data_sensor_history_data ), portMAX_DELAY);
             break;
         }
         case VIEW_EVENT_SENSOR_CO2_HISTORY: {
             ESP_LOGI(TAG, "event: VIEW_EVENT_SENSOR_CO2_HISTORY");
-            struct view_data_sensor_history_data data;
-            data.sensor_type = SENSOR_DATA_CO2;
-            data.resolution = 0;
+            __g_history_event_buf.sensor_type = SENSOR_DATA_CO2;
+            __g_history_event_buf.resolution = 0;
 
             //test
             float min=700;
@@ -1391,7 +1367,7 @@ static void __view_event_handler(void* handler_args, esp_event_base_t base, int3
             }
             data.week_max = max;
             data.week_min = min;
-            esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA_HISTORY, &data, sizeof(struct view_data_sensor_history_data ), portMAX_DELAY);
+            esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA_HISTORY, &__g_history_event_buf, sizeof(struct view_data_sensor_history_data ), portMAX_DELAY);
             break;
         }
 #endif
@@ -1413,7 +1389,7 @@ int indicator_sensor_init(void)
 
     xTaskCreate(esp32_rp2040_comm_task, "esp32_rp2040_comm_task", ESP32_RP2040_COMM_TASK_STACK_SIZE, NULL, 2, NULL);
 
-    xTaskCreate(sensor_history_data_updata_task, "sensor_history_data_updata_task", 1024*4, NULL, 6, NULL);
+    xTaskCreate(sensor_history_data_updata_task, "sensor_history_data_updata_task", 1024*8, NULL, 6, NULL);
 
     ESP_ERROR_CHECK(esp_event_handler_instance_register_with(view_event_handle, 
                                                             VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_TEMP_HISTORY, 
