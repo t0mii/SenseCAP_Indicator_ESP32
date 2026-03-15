@@ -22,9 +22,14 @@
 #include "mbedtls/error.h"
 #include "esp_crt_bundle.h"
 
+#include "indicator_storage.h"
+
 #define MAX_HTTP_OUTPUT_BUFFER 4096
 
 #define DISPLAY_CFG_STORAGE  "city"
+#define CITY_CUSTOM_STORAGE  "city_cust"
+
+static char __custom_city_name[32] = {0};
 
 
 struct indicator_city
@@ -323,6 +328,19 @@ static const city_tz_entry_t known_city_timezones[] = {
     {"Prague", 3600}, {"Brno", 3600},
     {"Budapest", 3600},
     {"Stockholm", 3600}, {"Oslo", 3600}, {"Copenhagen", 3600},
+    /* Austrian cities */
+    {"Graz", 3600}, {"Linz", 3600}, {"Salzburg", 3600}, {"Innsbruck", 3600},
+    {"Klagenfurt", 3600}, {"Villach", 3600}, {"Wels", 3600}, {"Sankt Poelten", 3600},
+    {"Dornbirn", 3600}, {"Wiener Neustadt", 3600}, {"Steyr", 3600}, {"Feldkirch", 3600},
+    {"Bregenz", 3600}, {"Leonding", 3600}, {"Baden", 3600}, {"Wolfsberg", 3600},
+    {"Leoben", 3600}, {"Krems an der Donau", 3600}, {"Traun", 3600}, {"Amstetten", 3600},
+    {"Kapfenberg", 3600}, {"Moedling", 3600}, {"Lustenau", 3600}, {"Hallein", 3600},
+    {"Kufstein", 3600}, {"Traiskirchen", 3600}, {"Schwechat", 3600}, {"Braunau am Inn", 3600},
+    {"Stockerau", 3600}, {"Saalfelden", 3600}, {"Ansfelden", 3600}, {"Tulln", 3600},
+    {"Hohenems", 3600}, {"Ternitz", 3600}, {"Perchtoldsdorf", 3600}, {"Telfs", 3600},
+    {"Feldkirchen in Kaernten", 3600}, {"Bad Ischl", 3600}, {"Voecklabruck", 3600},
+    {"Marchtrenk", 3600}, {"Woergl", 3600}, {"Lienz", 3600}, {"Judenburg", 3600},
+    {"Lilienfeld", 3600}, {"Pernitz", 3600},
     /* Eastern European Time (EET) - UTC+2 */
     {"Helsinki", 7200}, {"Tallinn", 7200}, {"Riga", 7200}, {"Vilnius", 7200},
     {"Athens", 7200}, {"Bucharest", 7200}, {"Sofia", 7200},
@@ -358,7 +376,92 @@ static int __get_city_timezone_offset(const char *city)
         }
     }
 
-    return -1;  /* Not found */
+    return -1;
+}
+
+/* IANA timezone name → POSIX TZ string mapping (handles DST automatically) */
+typedef struct {
+    const char *iana_name;
+    const char *posix_tz;
+} iana_tz_entry_t;
+
+static const iana_tz_entry_t known_iana_timezones[] = {
+    /* CET: last Sun Mar → last Sun Oct */
+    {"Europe/Vienna",     "CET-1CEST,M3.5.0,M10.5.0/3"},
+    {"Europe/Berlin",     "CET-1CEST,M3.5.0,M10.5.0/3"},
+    {"Europe/Zurich",     "CET-1CEST,M3.5.0,M10.5.0/3"},
+    {"Europe/Paris",      "CET-1CEST,M3.5.0,M10.5.0/3"},
+    {"Europe/Amsterdam",  "CET-1CEST,M3.5.0,M10.5.0/3"},
+    {"Europe/Brussels",   "CET-1CEST,M3.5.0,M10.5.0/3"},
+    {"Europe/Rome",       "CET-1CEST,M3.5.0,M10.5.0/3"},
+    {"Europe/Madrid",     "CET-1CEST,M3.5.0,M10.5.0/3"},
+    {"Europe/Warsaw",     "CET-1CEST,M3.5.0,M10.5.0/3"},
+    {"Europe/Prague",     "CET-1CEST,M3.5.0,M10.5.0/3"},
+    {"Europe/Budapest",   "CET-1CEST,M3.5.0,M10.5.0/3"},
+    {"Europe/Stockholm",  "CET-1CEST,M3.5.0,M10.5.0/3"},
+    {"Europe/Oslo",       "CET-1CEST,M3.5.0,M10.5.0/3"},
+    {"Europe/Copenhagen", "CET-1CEST,M3.5.0,M10.5.0/3"},
+    {"Europe/Ljubljana",  "CET-1CEST,M3.5.0,M10.5.0/3"},
+    {"Europe/Zagreb",     "CET-1CEST,M3.5.0,M10.5.0/3"},
+    {"Europe/Belgrade",   "CET-1CEST,M3.5.0,M10.5.0/3"},
+    /* EET: last Sun Mar → last Sun Oct */
+    {"Europe/Helsinki",   "EET-2EEST,M3.5.0/3,M10.5.0/4"},
+    {"Europe/Tallinn",    "EET-2EEST,M3.5.0/3,M10.5.0/4"},
+    {"Europe/Riga",       "EET-2EEST,M3.5.0/3,M10.5.0/4"},
+    {"Europe/Vilnius",    "EET-2EEST,M3.5.0/3,M10.5.0/4"},
+    {"Europe/Athens",     "EET-2EEST,M3.5.0/3,M10.5.0/4"},
+    {"Europe/Bucharest",  "EET-2EEST,M3.5.0/3,M10.5.0/4"},
+    {"Europe/Sofia",      "EET-2EEST,M3.5.0/3,M10.5.0/4"},
+    {"Europe/Kyiv",       "EET-2EEST,M3.5.0/3,M10.5.0/4"},
+    /* WET */
+    {"Europe/London",     "GMT0BST,M3.5.0/1,M10.5.0"},
+    {"Europe/Dublin",     "IST-1GMT0,M10.5.0,M3.5.0/1"},
+    {"Europe/Lisbon",     "WET0WEST,M3.5.0/1,M10.5.0"},
+    {"Atlantic/Reykjavik","GMT0"},
+    /* No DST */
+    {"Europe/Moscow",     "MSK-3"},
+    {"Europe/Istanbul",   "<+03>-3"},
+    /* US: 2nd Sun Mar → 1st Sun Nov */
+    {"America/New_York",      "EST5EDT,M3.2.0,M11.1.0"},
+    {"America/Chicago",       "CST6CDT,M3.2.0,M11.1.0"},
+    {"America/Denver",        "MST7MDT,M3.2.0,M11.1.0"},
+    {"America/Los_Angeles",   "PST8PDT,M3.2.0,M11.1.0"},
+    {"America/Phoenix",       "MST7"},
+    {"America/Toronto",       "EST5EDT,M3.2.0,M11.1.0"},
+    {"America/Vancouver",     "PST8PDT,M3.2.0,M11.1.0"},
+    /* Asia / Pacific (no DST) */
+    {"Asia/Tokyo",        "JST-9"},
+    {"Asia/Shanghai",     "CST-8"},
+    {"Asia/Hong_Kong",    "HKT-8"},
+    {"Asia/Singapore",    "SGT-8"},
+    {"Asia/Kolkata",      "IST-5:30"},
+    {"Asia/Dubai",        "<+04>-4"},
+    {"Asia/Seoul",        "KST-9"},
+    /* Australia */
+    {"Australia/Sydney",    "AEST-10AEDT,M10.1.0,M4.1.0/3"},
+    {"Australia/Melbourne", "AEST-10AEDT,M10.1.0,M4.1.0/3"},
+    {"Australia/Perth",     "AWST-8"},
+    /* New Zealand */
+    {"Pacific/Auckland",  "NZST-12NZDT,M9.5.0,M4.1.0/3"},
+    {NULL, NULL}
+};
+
+static const char *__get_iana_timezone_posix(const char *iana_name)
+{
+    if (iana_name == NULL || strlen(iana_name) == 0) {
+        return NULL;
+    }
+
+    for (int i = 0; known_iana_timezones[i].iana_name != NULL; i++) {
+        if (strcasecmp(iana_name, known_iana_timezones[i].iana_name) == 0) {
+            ESP_LOGI(TAG, "IANA '%s' matched → POSIX TZ: %s",
+                     iana_name, known_iana_timezones[i].posix_tz);
+            return known_iana_timezones[i].posix_tz;
+        }
+    }
+
+    ESP_LOGW(TAG, "IANA timezone '%s' not in lookup table", iana_name);
+    return NULL;
 }
 
 static int __time_zone_data_prase(const char *p_str)
@@ -801,7 +904,13 @@ static void __indicator_http_task(void *p_arg)
                 ESP_LOGI(TAG, "timezone : %s", __g_city_model.timezone);
                 city_flag = true;
                 ip_flag= true;
-                esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_CITY, &__g_city_model.city, sizeof(__g_city_model.city), portMAX_DELAY);
+                if (strlen(__custom_city_name) > 0) {
+                    esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_CITY,
+                                      __custom_city_name, sizeof(__custom_city_name), portMAX_DELAY);
+                } else {
+                    esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_CITY,
+                                      &__g_city_model.city, sizeof(__g_city_model.city), portMAX_DELAY);
+                }
             }
         }
 
@@ -815,66 +924,51 @@ static void __indicator_http_task(void *p_arg)
         }
         if(  net_flag && ip_flag && !time_zone_flag) {
             ESP_LOGI(TAG, "Get time zone...");
-            err =  __time_zone_get(__g_city_model.ip);
 
-            /* ALWAYS prefer city-based lookup if city is known - API can return wrong offset due to IP geolocation errors */
-            {
-                int city_offset = __get_city_timezone_offset(__g_city_model.city);
-                if (city_offset != -1) {
-                    if (err == 0 && __g_city_model.local_utc_offset != city_offset) {
-                        ESP_LOGW(TAG, "API offset (%d) differs from city offset (%d) for '%s' - using city offset",
-                                 __g_city_model.local_utc_offset, city_offset, __g_city_model.city);
-                    }
-                    __g_city_model.local_utc_offset = city_offset;
-                    err = 0;  /* Mark as success */
-                } else if (err != 0) {
-                    ESP_LOGW(TAG, "Timezone API failed and no city fallback for '%s'",
-                             __g_city_model.city);
-                }
-            }
-
-            if( err == 0 && __g_city_model.local_utc_offset != 0) {
-                char zone_str[64];
-                int offset_hours = __g_city_model.local_utc_offset / 3600;
-                int offset_mins = abs((__g_city_model.local_utc_offset % 3600) / 60);
-
-                ESP_LOGI(TAG, "UTC offset: %d seconds = %d hours %d mins",
-                         __g_city_model.local_utc_offset, offset_hours, offset_mins);
-
-                /* POSIX TZ format: sign is inverted (UTC-1 means UTC+1 in common notation)
-                 * For Vienna (CET/CEST): offset_hours=1 in winter, 2 in summer
-                 * We create "UTC-1" for UTC+1, "UTC+5" for UTC-5 */
-                if (offset_mins == 0) {
-                    if (offset_hours >= 0) {
-                        snprintf(zone_str, sizeof(zone_str) - 1, "UTC-%d", offset_hours);
-                    } else {
-                        snprintf(zone_str, sizeof(zone_str) - 1, "UTC+%d", -offset_hours);
-                    }
-                } else {
-                    if (offset_hours >= 0) {
-                        snprintf(zone_str, sizeof(zone_str) - 1, "UTC-%d:%02d", offset_hours, offset_mins);
-                    } else {
-                        snprintf(zone_str, sizeof(zone_str) - 1, "UTC+%d:%02d", -offset_hours, offset_mins);
-                    }
-                }
-                ESP_LOGI(TAG, "Setting TZ to: %s", zone_str);
-                indicator_time_net_zone_set( zone_str );
-
+            /* Priority 1: IANA timezone from ip-api.com (most reliable, includes DST rules) */
+            const char *posix_tz = __get_iana_timezone_posix(__g_city_model.timezone);
+            if (posix_tz != NULL) {
+                ESP_LOGI(TAG, "Setting TZ from IANA '%s': %s", __g_city_model.timezone, posix_tz);
+                indicator_time_net_zone_set((char *)posix_tz);
                 time_zone_flag = true;
-            } else if (city_flag) {
-                /* City detected but no timezone - try city fallback one more time */
+            } else {
+                /* Priority 2: City name lookup (no DST, but correct base offset) */
                 int city_offset = __get_city_timezone_offset(__g_city_model.city);
                 if (city_offset != -1) {
                     char zone_str[64];
                     int offset_hours = city_offset / 3600;
-                    if (offset_hours >= 0) {
-                        snprintf(zone_str, sizeof(zone_str) - 1, "UTC-%d", offset_hours);
+                    int offset_mins = abs((city_offset % 3600) / 60);
+                    if (offset_mins == 0) {
+                        snprintf(zone_str, sizeof(zone_str) - 1, offset_hours >= 0 ? "UTC-%d" : "UTC+%d",
+                                 offset_hours >= 0 ? offset_hours : -offset_hours);
                     } else {
-                        snprintf(zone_str, sizeof(zone_str) - 1, "UTC+%d", -offset_hours);
+                        snprintf(zone_str, sizeof(zone_str) - 1, offset_hours >= 0 ? "UTC-%d:%02d" : "UTC+%d:%02d",
+                                 offset_hours >= 0 ? offset_hours : -offset_hours, offset_mins);
                     }
-                    ESP_LOGI(TAG, "City fallback TZ: %s", zone_str);
+                    ESP_LOGI(TAG, "Setting TZ from city '%s': %s", __g_city_model.city, zone_str);
                     indicator_time_net_zone_set(zone_str);
                     time_zone_flag = true;
+                } else {
+                    /* Priority 3: timeapi.io API (least reliable, IP geolocation can be wrong) */
+                    err = __time_zone_get(__g_city_model.ip);
+                    if (err == 0 && __g_city_model.local_utc_offset != 0) {
+                        char zone_str[64];
+                        int offset_hours = __g_city_model.local_utc_offset / 3600;
+                        int offset_mins = abs((__g_city_model.local_utc_offset % 3600) / 60);
+                        if (offset_mins == 0) {
+                            snprintf(zone_str, sizeof(zone_str) - 1, offset_hours >= 0 ? "UTC-%d" : "UTC+%d",
+                                     offset_hours >= 0 ? offset_hours : -offset_hours);
+                        } else {
+                            snprintf(zone_str, sizeof(zone_str) - 1, offset_hours >= 0 ? "UTC-%d:%02d" : "UTC+%d:%02d",
+                                     offset_hours >= 0 ? offset_hours : -offset_hours, offset_mins);
+                        }
+                        ESP_LOGW(TAG, "Using API fallback TZ (may lack DST): %s", zone_str);
+                        indicator_time_net_zone_set(zone_str);
+                        time_zone_flag = true;
+                    } else {
+                        ESP_LOGE(TAG, "All timezone methods failed for city='%s' tz='%s' ip='%s'",
+                                 __g_city_model.city, __g_city_model.timezone, __g_city_model.ip);
+                    }
                 }
             }
         }
@@ -909,10 +1003,53 @@ static void __view_event_handler(void* handler_args, esp_event_base_t base, int3
     }
 }
 
+int indicator_city_set_custom_name(const char *name)
+{
+    if (name == NULL) {
+        memset(__custom_city_name, 0, sizeof(__custom_city_name));
+    } else {
+        strncpy(__custom_city_name, name, sizeof(__custom_city_name) - 1);
+        __custom_city_name[sizeof(__custom_city_name) - 1] = '\0';
+    }
+
+    esp_err_t err = indicator_storage_write(CITY_CUSTOM_STORAGE, __custom_city_name, sizeof(__custom_city_name));
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to save custom city name");
+        return -1;
+    }
+
+    ESP_LOGI(TAG, "Custom city name saved: '%s'", __custom_city_name);
+
+    if (strlen(__custom_city_name) > 0) {
+        esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_CITY,
+                          __custom_city_name, sizeof(__custom_city_name), portMAX_DELAY);
+    } else {
+        esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_CITY,
+                          &__g_city_model.city, sizeof(__g_city_model.city), portMAX_DELAY);
+    }
+    return 0;
+}
+
+int indicator_city_get_custom_name(char *buf, size_t len)
+{
+    if (buf == NULL || len == 0) return -1;
+    strncpy(buf, __custom_city_name, len - 1);
+    buf[len - 1] = '\0';
+    return 0;
+}
+
 int indicator_city_init(void)
 {
     __g_http_com_sem = xSemaphoreCreateBinary();
-    
+
+    size_t stored_len = sizeof(__custom_city_name);
+    esp_err_t err = indicator_storage_read(CITY_CUSTOM_STORAGE, __custom_city_name, &stored_len);
+    if (err == ESP_OK && strlen(__custom_city_name) > 0) {
+        ESP_LOGI(TAG, "Loaded custom city name: '%s'", __custom_city_name);
+        esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_CITY,
+                          __custom_city_name, sizeof(__custom_city_name), portMAX_DELAY);
+    }
+
     xTaskCreate(&__indicator_http_task, "__indicator_http_task", 1024 * 5, NULL, 10, NULL);
 
     ESP_ERROR_CHECK(esp_event_handler_instance_register_with(view_event_handle, 
